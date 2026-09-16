@@ -117,16 +117,9 @@ func (p *OIDCIdentityProvider) Complete(ctx context.Context, callback IdentityCa
 	if p.Client == nil {
 		p.Client = http.DefaultClient
 	}
-	if p.Connector.TokenEndpointAuthMethod == "client_secret_post" {
-		form.Set("client_secret", p.Secret)
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.Connector.TokenEndpoint, strings.NewReader(form.Encode()))
+	request, err := newTokenEndpointRequest(ctx, p.Connector, p.ClientID, p.Secret, form)
 	if err != nil {
-		return Identity{}, fmt.Errorf("create OIDC token request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if p.Connector.TokenEndpointAuthMethod == "client_secret_basic" {
-		request.SetBasicAuth(p.ClientID, p.Secret)
+		return Identity{}, err
 	}
 	response, err := p.Client.Do(request)
 	if err != nil {
@@ -137,7 +130,12 @@ func (p *OIDCIdentityProvider) Complete(ctx context.Context, callback IdentityCa
 		return Identity{}, fmt.Errorf("OIDC token request returned HTTP %d", response.StatusCode)
 	}
 	var tokenResponse struct {
-		IDToken string `json:"id_token"`
+		IDToken      string `json:"id_token"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		TokenType    string `json:"token_type"`
+		ExpiresIn    int    `json:"expires_in"`
+		Scope        string `json:"scope"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&tokenResponse); err != nil {
 		return Identity{}, fmt.Errorf("decode OIDC token response: %w", err)
@@ -153,7 +151,48 @@ func (p *OIDCIdentityProvider) Complete(ctx context.Context, callback IdentityCa
 	if !ok || subject == "" {
 		return Identity{}, errors.New("OIDC ID token has no subject")
 	}
-	return Identity{Subject: subject, Claims: claims}, nil
+	identity := Identity{Subject: subject, Claims: claims}
+	// The upstream access token is this user's real, already-scoped
+	// downstream credential (e.g. for Databricks' own APIs). Capturing it
+	// here is what lets the "upstream_session" downstream-token strategy
+	// avoid depending on the upstream provider supporting RFC 8693.
+	if tokenResponse.AccessToken != "" {
+		tokenType := tokenResponse.TokenType
+		if tokenType == "" {
+			tokenType = "Bearer"
+		}
+		ttl := time.Duration(tokenResponse.ExpiresIn) * time.Second
+		if ttl <= 0 {
+			ttl = 5 * time.Minute
+		}
+		identity.UpstreamSession = &UpstreamSession{
+			AccessToken:  tokenResponse.AccessToken,
+			RefreshToken: tokenResponse.RefreshToken,
+			TokenType:    tokenType,
+			ExpiresAt:    time.Now().Add(ttl),
+			Scope:        strings.Fields(tokenResponse.Scope),
+		}
+	}
+	return identity, nil
+}
+
+// newTokenEndpointRequest builds an application/x-www-form-urlencoded POST
+// to a connector's token endpoint, applying whichever client authentication
+// method the connector is configured for. Complete, OIDCTokenExchanger, and
+// UpstreamSessionExchanger all send this same shape of request.
+func newTokenEndpointRequest(ctx context.Context, connector ConnectorConfig, clientID, secret string, form url.Values) (*http.Request, error) {
+	if connector.TokenEndpointAuthMethod == "client_secret_post" {
+		form.Set("client_secret", secret)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, connector.TokenEndpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("create token endpoint request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if connector.TokenEndpointAuthMethod == "client_secret_basic" {
+		request.SetBasicAuth(clientID, secret)
+	}
+	return request, nil
 }
 
 // OIDCTokenExchanger implements RFC 8693 against the selected provider.
@@ -191,16 +230,9 @@ func (e *OIDCTokenExchanger) Exchange(ctx context.Context, exchange ExchangeRequ
 		"scope":                {strings.Join(exchange.Scope, " ")},
 		"client_id":            {clientID},
 	}
-	if e.Connector.TokenEndpointAuthMethod == "client_secret_post" {
-		form.Set("client_secret", e.Secret)
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, e.Connector.TokenEndpoint, strings.NewReader(form.Encode()))
+	request, err := newTokenEndpointRequest(ctx, e.Connector, clientID, e.Secret, form)
 	if err != nil {
 		return ExchangeResponse{}, fmt.Errorf("create token exchange request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if e.Connector.TokenEndpointAuthMethod == "client_secret_basic" {
-		request.SetBasicAuth(clientID, e.Secret)
 	}
 	response, err := e.Client.Do(request)
 	if err != nil {

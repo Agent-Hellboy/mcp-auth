@@ -306,6 +306,7 @@ def test_runtime_oidc_connector_and_downstream_tools_call() -> None:
             "exchange_client_id": "mock-exchange-client",
             "token_endpoint_auth_method": "none",
             "allowed_upstream_callback_uris": [callback_uri],
+            "downstream_token_strategy": "rfc8693",
         }
     }
     with tempfile.TemporaryDirectory() as temporary_directory:

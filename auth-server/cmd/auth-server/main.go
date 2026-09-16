@@ -24,7 +24,7 @@ func main() {
 	}
 	defer closeStore()
 
-	config, identityProvider, tokenExchanger, err := buildProviders(config)
+	config, identityProvider, tokenExchanger, err := buildProviders(config, store)
 	if err != nil {
 		slog.Error("provider initialization failed", "error", err)
 		os.Exit(1)
@@ -106,7 +106,7 @@ func buildStore(config server.Config) (server.Store, func(), error) {
 	}
 }
 
-func buildProviders(config server.Config) (server.Config, server.IdentityProvider, server.TokenExchanger, error) {
+func buildProviders(config server.Config, store server.Store) (server.Config, server.IdentityProvider, server.TokenExchanger, error) {
 	if config.ConnectorName == "" {
 		if !config.LocalDevelopment {
 			return config, nil, nil, errors.New("a named connector is required outside local development")
@@ -129,9 +129,20 @@ func buildProviders(config server.Config) (server.Config, server.IdentityProvide
 	if err != nil {
 		return config, nil, nil, err
 	}
-	exchanger, err := server.NewOIDCTokenExchanger(connector, allowInsecure)
+	exchanger, err := buildTokenExchanger(connector, allowInsecure, store)
 	if err != nil {
 		return config, nil, nil, err
 	}
 	return config, identity, exchanger, nil
+}
+
+// buildTokenExchanger selects the downstream-token strategy the connector is
+// configured for. upstream_session (the default) reuses the token set
+// captured at login; rfc8693 performs RFC 8693 token-exchange against the
+// same upstream provider, for providers that support it.
+func buildTokenExchanger(connector server.ConnectorConfig, allowInsecure bool, store server.Store) (server.TokenExchanger, error) {
+	if connector.ResolvedDownstreamTokenStrategy() == server.DownstreamTokenStrategyRFC8693 {
+		return server.NewOIDCTokenExchanger(connector, allowInsecure)
+	}
+	return server.NewUpstreamSessionExchanger(store, connector)
 }

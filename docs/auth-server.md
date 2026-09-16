@@ -61,10 +61,31 @@ The configured RSA key signs RS256 access tokens. For key rotation, deploy a key
 Connector files are keyed JSON objects. They contain upstream endpoints, client
 IDs, requested scopes, MCP scopes, and `client_secret_env`—the name of an
 environment variable, never a literal secret. `client_id` can likewise be
-supplied indirectly as `client_id_env`; set exactly one of the two. The same
-connector can provide interactive identity and RFC 8693 downstream exchange.
-All provider-specific behavior is behind `IdentityProvider` and
-`TokenExchanger` interfaces.
+supplied indirectly as `client_id_env`; set exactly one of the two. All
+provider-specific behavior is behind `IdentityProvider` and `TokenExchanger`
+interfaces.
+
+`downstream_token_strategy` selects how a resource server's downstream
+credential (the one it sends to the actual downstream API — Databricks, an
+internal service, whatever the connector fronts) is obtained:
+
+- `upstream_session` (the default): the token set the connector's upstream
+  provider already issued at login is captured, persisted per subject, reused
+  directly, and refreshed via `grant_type=refresh_token` when it expires. This
+  works with any OAuth2/OIDC provider, since it never depends on the upstream
+  supporting RFC 8693 token-exchange or trusting an mcp-auth-issued token as a
+  federated subject. Its limit: it can only return the credential the login
+  session already produced — it can't mint one for an audience/scope that
+  session wasn't already requested with.
+- `rfc8693`: performs RFC 8693 token-exchange against the connector's upstream
+  provider, presenting this server's own access token as `subject_token`. Use
+  this only against a provider that actually implements token-exchange (often
+  requiring pre-configured issuer federation) and where a per-request,
+  differently-scoped downstream token is genuinely needed.
+
+If unsure which a specific upstream provider supports, start with
+`upstream_session` — it needs nothing beyond what an ordinary Authorization
+Code + PKCE login already requires.
 
 A connector has two independent, optional redirect allowlists that are easy to
 conflate because they're both "redirect URIs":
@@ -88,6 +109,14 @@ shared managed database adapter implementing `Store`; the HTTP handlers do not
 depend on SQLite. Authorization codes and consent state are one-time and
 short-lived. Refresh tokens are opaque, hashed, rotated on use, and revoked when
 reuse is detected.
+
+**`upstream_sessions` is the one exception to "the store never holds a usable
+secret."** The `upstream_session` downstream-token strategy needs to replay the
+upstream provider's own access/refresh token later, so unlike every other
+table it stores that token set directly, not a hash. Treat this table with the
+same care as the signing key: it belongs in a store with encryption at rest
+and restricted access, not an unencrypted Docker volume, and a leak of it is
+equivalent to a leak of every affected user's downstream credential.
 
 The local token exchanger exists only to make the development Compose flow
 self-contained. Production must inject a provider-backed `TokenExchanger` that

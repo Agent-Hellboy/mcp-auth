@@ -113,10 +113,11 @@ func TestRegisterEnforcesAllowedClientRedirectURIs(t *testing.T) {
 }
 
 // TestSQLiteStoreMigratesPreviousSchema opens a database created with the
-// schema shipped before public_key_pem/client_assertions/code_verifier
-// existed (schema version 0, unset PRAGMA user_version) and asserts that
-// NewSQLiteStore migrates it in place instead of crash-looping, as it would
-// against a real upgrade of a deployed database.
+// original schema (version 0, unset PRAGMA user_version, predating
+// public_key_pem/client_assertions/code_verifier/upstream_sessions) and
+// asserts that NewSQLiteStore migrates it through every intermediate version
+// in place instead of crash-looping, as it would against a real upgrade of a
+// deployed database.
 func TestSQLiteStoreMigratesPreviousSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.db")
 	db, err := sql.Open("sqlite", path)
@@ -175,6 +176,13 @@ VALUES ('legacy-client','legacy','["https://client.example.com/callback"]','none
 	consent, err := store.ConsumeConsentRequest("state", time.Now())
 	if err != nil || consent.CodeVerifier != "verifier" {
 		t.Fatalf("code_verifier did not round-trip after migration: %v, %+v", err, consent)
+	}
+	if err := store.SaveUpstreamSession("user-1", UpstreamSession{AccessToken: "a", RefreshToken: "r", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scope: []string{"sql"}}); err != nil {
+		t.Fatalf("upstream_sessions table missing after migration: %v", err)
+	}
+	session, err := store.GetUpstreamSession("user-1")
+	if err != nil || session.AccessToken != "a" {
+		t.Fatalf("upstream session did not round-trip after migration: %v, %+v", err, session)
 	}
 }
 

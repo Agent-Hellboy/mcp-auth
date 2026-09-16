@@ -45,7 +45,7 @@ func (s *SQLiteStore) Close() error { return s.db.Close() }
 // existing database file applies exactly the missing ALTER/CREATE statements
 // instead of relying on CREATE TABLE IF NOT EXISTS, which silently no-ops on
 // a table that already exists in its old shape.
-const currentSchemaVersion = 1
+const currentSchemaVersion = 2
 
 // migrations[v] takes a database at schema version v to v+1. Statements must
 // be additive and safe to run inside a single transaction alongside the
@@ -58,6 +58,11 @@ CREATE TABLE IF NOT EXISTS client_assertions (
   PRIMARY KEY (client_id, jti)
 );
 ALTER TABLE consent_requests ADD COLUMN code_verifier TEXT NOT NULL DEFAULT '';`,
+	1: `
+CREATE TABLE IF NOT EXISTS upstream_sessions (
+  subject TEXT PRIMARY KEY, access_token TEXT NOT NULL, refresh_token TEXT NOT NULL,
+  token_type TEXT NOT NULL, expires_at INTEGER NOT NULL, scope TEXT NOT NULL
+);`,
 }
 
 const freshSchema = `
@@ -82,6 +87,10 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
 CREATE TABLE IF NOT EXISTS consent_requests (
   value_hash TEXT PRIMARY KEY, request_json TEXT NOT NULL, nonce TEXT NOT NULL, expires_at INTEGER NOT NULL,
   code_verifier TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS upstream_sessions (
+  subject TEXT PRIMARY KEY, access_token TEXT NOT NULL, refresh_token TEXT NOT NULL,
+  token_type TEXT NOT NULL, expires_at INTEGER NOT NULL, scope TEXT NOT NULL
 );`
 
 func (s *SQLiteStore) initialize() error {
@@ -328,6 +337,37 @@ func (s *SQLiteStore) ConsumeConsentRequest(value string, now time.Time) (Consen
 		return ConsentRequest{}, err
 	}
 	return request, nil
+}
+
+func (s *SQLiteStore) SaveUpstreamSession(subject string, session UpstreamSession) error {
+	scope, err := json.Marshal(session.Scope)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO upstream_sessions (subject,access_token,refresh_token,token_type,expires_at,scope)
+VALUES (?,?,?,?,?,?) ON CONFLICT(subject) DO UPDATE SET access_token=excluded.access_token,
+refresh_token=excluded.refresh_token, token_type=excluded.token_type, expires_at=excluded.expires_at, scope=excluded.scope`,
+		subject, session.AccessToken, session.RefreshToken, session.TokenType, session.ExpiresAt.UnixNano(), string(scope))
+	return err
+}
+
+func (s *SQLiteStore) GetUpstreamSession(subject string) (UpstreamSession, error) {
+	var session UpstreamSession
+	var expires int64
+	var scope string
+	err := s.db.QueryRow(`SELECT access_token,refresh_token,token_type,expires_at,scope FROM upstream_sessions WHERE subject=?`, subject).
+		Scan(&session.AccessToken, &session.RefreshToken, &session.TokenType, &expires, &scope)
+	if errors.Is(err, sql.ErrNoRows) {
+		return UpstreamSession{}, ErrNotFound
+	}
+	if err != nil {
+		return UpstreamSession{}, err
+	}
+	session.ExpiresAt = time.Unix(0, expires)
+	if err := json.Unmarshal([]byte(scope), &session.Scope); err != nil {
+		return UpstreamSession{}, err
+	}
+	return session, nil
 }
 
 func boolInt(value bool) int {

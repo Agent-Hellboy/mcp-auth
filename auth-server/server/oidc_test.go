@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"math/big"
@@ -19,6 +21,77 @@ func jwkFor(key *rsa.PublicKey, kid string) map[string]any {
 		"kty": "RSA", "use": "sig", "alg": "RS256", "kid": kid,
 		"n": base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
 		"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes()),
+	}
+}
+
+func signTestIDToken(t *testing.T, key *rsa.PrivateKey, kid string, claims map[string]any) string {
+	t.Helper()
+	header := map[string]any{"typ": "JWT", "alg": "RS256", "kid": kid}
+	headEncoded := base64.RawURLEncoding.EncodeToString(mustJSON(header))
+	claimEncoded := base64.RawURLEncoding.EncodeToString(mustJSON(claims))
+	message := []byte(headEncoded + "." + claimEncoded)
+	digest := sha256.Sum256(message)
+	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(message) + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func TestOIDCCompleteCapturesUpstreamSession(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []any{jwkFor(&key.PublicKey, "test-key")}})
+	}))
+	defer jwksServer.Close()
+
+	const issuer = "https://upstream.example.com"
+	const clientID = "test-client"
+	now := time.Now().UTC()
+	idToken := signTestIDToken(t, key, "test-key", map[string]any{
+		"iss": issuer, "sub": "user-1", "aud": clientID, "nonce": "expected-nonce",
+		"iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
+	})
+
+	var tokenServer *httptest.Server
+	tokenServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id_token": idToken, "access_token": "upstream-access-token", "refresh_token": "upstream-refresh-token",
+			"token_type": "Bearer", "expires_in": 300, "scope": "sql unity-catalog",
+		})
+	}))
+	defer func() { tokenServer.Close() }()
+
+	provider := &OIDCIdentityProvider{
+		Connector: ConnectorConfig{Issuer: issuer, TokenEndpoint: tokenServer.URL, JWKSURI: jwksServer.URL, TokenEndpointAuthMethod: "none"},
+		Client:    http.DefaultClient,
+		ClientID:  clientID,
+	}
+	identity, err := provider.Complete(context.Background(), IdentityCallback{
+		Code: "auth-code", RedirectURI: "https://mcp-auth.example.com/identity/callback", State: "state-1",
+		Nonce: "expected-nonce", CodeVerifier: "verifier",
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if identity.Subject != "user-1" {
+		t.Fatalf("unexpected subject: %q", identity.Subject)
+	}
+	if identity.UpstreamSession == nil {
+		t.Fatal("expected Complete to capture an upstream session")
+	}
+	session := *identity.UpstreamSession
+	if session.AccessToken != "upstream-access-token" || session.RefreshToken != "upstream-refresh-token" {
+		t.Fatalf("unexpected upstream session: %+v", session)
+	}
+	if len(session.Scope) != 2 || session.Scope[0] != "sql" || session.Scope[1] != "unity-catalog" {
+		t.Fatalf("unexpected upstream session scope: %+v", session.Scope)
+	}
+	if session.ExpiresAt.Before(time.Now().Add(4*time.Minute)) || session.ExpiresAt.After(time.Now().Add(6*time.Minute)) {
+		t.Fatalf("unexpected upstream session expiry: %v", session.ExpiresAt)
 	}
 }
 

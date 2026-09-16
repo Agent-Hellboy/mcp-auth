@@ -10,6 +10,7 @@
     "mcp_scopes": ["tools:read"],
     "exchange_client_id": "compose-exchange-client",
     "token_endpoint_auth_method": "none",
-    "allowed_upstream_callback_uris": ["http://mcp-auth:8080/identity/callback"]
+    "allowed_upstream_callback_uris": ["http://mcp-auth:8080/identity/callback"],
+    "downstream_token_strategy": "rfc8693"
   }
 }

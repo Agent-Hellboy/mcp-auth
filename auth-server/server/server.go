@@ -220,6 +220,12 @@ func (s *Server) identityCallback(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) completeAuthorization(w http.ResponseWriter, r *http.Request, pending ConsentRequest, identity Identity) {
 	request := pending.Request
+	if identity.UpstreamSession != nil {
+		if err := s.Store.SaveUpstreamSession(identity.Subject, *identity.UpstreamSession); err != nil {
+			oauthError(w, http.StatusInternalServerError, "server_error")
+			return
+		}
+	}
 	code := randomID()
 	if err := s.Store.SaveAuthorizationCode(AuthorizationCode{
 		ValueHash: HashSecret(code), ClientID: request.ClientID, RedirectURI: request.RedirectURI,
@@ -365,7 +371,8 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request, client Client)
 		oauthError(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}
-	response, err := s.TokenExchanger.Exchange(r.Context(), ExchangeRequest{SubjectToken: subjectToken, RequestedTokenType: r.FormValue("requested_token_type"), Audience: r.FormValue("audience"), Scope: strings.Fields(r.FormValue("scope"))})
+	subject, _ := subjectClaims["sub"].(string)
+	response, err := s.TokenExchanger.Exchange(r.Context(), ExchangeRequest{Subject: subject, SubjectToken: subjectToken, RequestedTokenType: r.FormValue("requested_token_type"), Audience: r.FormValue("audience"), Scope: strings.Fields(r.FormValue("scope"))})
 	if err != nil {
 		s.Audit.Event("token_exchange", "failure", map[string]any{"client_id": client.ID, "audience": r.FormValue("audience")})
 		oauthError(w, http.StatusBadRequest, "invalid_target")

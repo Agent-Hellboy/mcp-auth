@@ -38,7 +38,21 @@ type ConnectorConfig struct {
 	// validRedirect is accepted, which is required for clients using a
 	// loopback listener on an unpredictable port.
 	AllowedClientRedirectURIs []string `json:"allowed_client_redirect_uris"`
+	// DownstreamTokenStrategy selects how a resource server's downstream
+	// credential is obtained: "upstream_session" (default) reuses and
+	// refreshes the token this connector's own upstream provider already
+	// issued at login, and works with any OAuth2/OIDC provider regardless of
+	// RFC 8693 support. "rfc8693" performs RFC 8693 token-exchange against
+	// this connector's upstream provider instead, for providers that support
+	// it and need a token minted for a specific audience the login session
+	// itself wasn't scoped for.
+	DownstreamTokenStrategy string `json:"downstream_token_strategy"`
 }
+
+const (
+	DownstreamTokenStrategyUpstreamSession = "upstream_session"
+	DownstreamTokenStrategyRFC8693         = "rfc8693"
+)
 
 func (c ConnectorConfig) validate(name string, allowInsecure bool) error {
 	for field, value := range map[string]string{
@@ -77,6 +91,9 @@ func (c ConnectorConfig) validate(name string, allowInsecure bool) error {
 	if len(c.MCPScopes) == 0 {
 		return fmt.Errorf("connector %q is missing mcp_scopes", name)
 	}
+	if c.DownstreamTokenStrategy != "" && c.DownstreamTokenStrategy != DownstreamTokenStrategyUpstreamSession && c.DownstreamTokenStrategy != DownstreamTokenStrategyRFC8693 {
+		return fmt.Errorf("connector %q has unsupported downstream_token_strategy", name)
+	}
 	for _, redirectURI := range c.AllowedUpstreamCallbackURIs {
 		if err := validAbsoluteURI(redirectURI); err != nil {
 			return fmt.Errorf("connector %q has an invalid allowed upstream callback URI: %w", name, err)
@@ -96,6 +113,15 @@ func validAbsoluteURI(value string) error {
 		return errors.New("must be an absolute URI with no fragment")
 	}
 	return nil
+}
+
+// ResolvedDownstreamTokenStrategy returns the configured strategy, defaulting
+// to upstream_session when unset.
+func (c ConnectorConfig) ResolvedDownstreamTokenStrategy() string {
+	if c.DownstreamTokenStrategy == "" {
+		return DownstreamTokenStrategyUpstreamSession
+	}
+	return c.DownstreamTokenStrategy
 }
 
 // resolveClientID returns the connector's OAuth client_id, reading it from

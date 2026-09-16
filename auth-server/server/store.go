@@ -58,6 +58,20 @@ type ConsentRequest struct {
 	CodeVerifier string
 }
 
+// UpstreamSession is the token set an upstream OIDC provider issued at
+// login, kept so the "upstream_session" downstream-token strategy can reuse
+// (and refresh) it instead of requiring RFC 8693 token-exchange support from
+// the upstream provider. Unlike the local refresh tokens above, this holds a
+// live, directly usable secret rather than a hash: a deployment's Store
+// backend must be chosen with that in mind (see docs/auth-server.md).
+type UpstreamSession struct {
+	AccessToken  string
+	RefreshToken string
+	TokenType    string
+	ExpiresAt    time.Time
+	Scope        []string
+}
+
 type Store interface {
 	SaveClient(Client) error
 	GetClient(string) (Client, error)
@@ -73,19 +87,26 @@ type Store interface {
 	// still valid. This bounds RFC 7523 private_key_jwt replay to a single use
 	// per assertion, regardless of the assertion's own short lifetime.
 	ConsumeClientAssertionJTI(clientID, jti string, expiresAt time.Time) error
+	// SaveUpstreamSession and GetUpstreamSession persist the upstream token
+	// set for the "upstream_session" downstream-token strategy, keyed by the
+	// local subject. There is one session per subject: a new login overwrites
+	// the previous one.
+	SaveUpstreamSession(subject string, session UpstreamSession) error
+	GetUpstreamSession(subject string) (UpstreamSession, error)
 }
 
 type MemoryStore struct {
-	mu         sync.Mutex
-	clients    map[string]Client
-	codes      map[string]AuthorizationCode
-	refresh    map[string]RefreshToken
-	consent    map[string]ConsentRequest
-	assertions map[string]time.Time
+	mu               sync.Mutex
+	clients          map[string]Client
+	codes            map[string]AuthorizationCode
+	refresh          map[string]RefreshToken
+	consent          map[string]ConsentRequest
+	assertions       map[string]time.Time
+	upstreamSessions map[string]UpstreamSession
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{clients: map[string]Client{}, codes: map[string]AuthorizationCode{}, refresh: map[string]RefreshToken{}, consent: map[string]ConsentRequest{}, assertions: map[string]time.Time{}}
+	return &MemoryStore{clients: map[string]Client{}, codes: map[string]AuthorizationCode{}, refresh: map[string]RefreshToken{}, consent: map[string]ConsentRequest{}, assertions: map[string]time.Time{}, upstreamSessions: map[string]UpstreamSession{}}
 }
 
 func HashSecret(value string) string {
@@ -203,4 +224,21 @@ func (s *MemoryStore) ConsumeConsentRequest(value string, now time.Time) (Consen
 	}
 	delete(s.consent, hash)
 	return request, nil
+}
+
+func (s *MemoryStore) SaveUpstreamSession(subject string, session UpstreamSession) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.upstreamSessions[subject] = session
+	return nil
+}
+
+func (s *MemoryStore) GetUpstreamSession(subject string) (UpstreamSession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.upstreamSessions[subject]
+	if !ok {
+		return UpstreamSession{}, ErrNotFound
+	}
+	return session, nil
 }

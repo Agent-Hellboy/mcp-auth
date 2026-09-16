@@ -22,6 +22,10 @@ type IdentityRequest struct {
 type Identity struct {
 	Subject string
 	Claims  map[string]any
+	// UpstreamSession is the upstream provider's own token set, captured at
+	// login for the "upstream_session" downstream-token strategy. nil unless
+	// the identity provider that produced this Identity captured one.
+	UpstreamSession *UpstreamSession
 }
 
 type LocalIdentityProvider struct{ Subject string }
@@ -37,6 +41,10 @@ type TokenExchanger interface {
 }
 
 type ExchangeRequest struct {
+	// Subject is the already-verified local subject_token's "sub" claim,
+	// populated by the caller (server.go's exchange handler) since it has
+	// already decoded and verified that token before invoking the exchanger.
+	Subject            string
 	SubjectToken       string
 	RequestedTokenType string
 	Audience           string
