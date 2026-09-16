@@ -1,0 +1,54 @@
+import httpx
+import jwt
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from mcp_auth_client import PrivateKeyJWTClientAuth, TokenExchangeClient
+
+
+@pytest.mark.asyncio
+async def test_token_exchange_success_and_cache() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.path == "/token"
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "downstream-token",
+                "token_type": "Bearer",
+                "expires_in": 300,
+                "scope": "data:read",
+            },
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://auth.example.com"
+    ) as client:
+        async with TokenExchangeClient(
+            "https://auth.example.com/token", http_client=client
+        ) as exchange:
+            first = await exchange.exchange(
+                "mcp-client-token", "https://api.example.com", {"data:read"}
+            )
+            second = await exchange.exchange(
+                "mcp-client-token", "https://api.example.com", {"data:read"}
+            )
+    assert first.access_token == second.access_token
+    assert first.audience == "https://api.example.com"
+    assert calls == 1
+
+
+def test_private_key_jwt_assertion() -> None:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    )
+    auth = PrivateKeyJWTClientAuth("client", pem, "key-1", "https://auth.example.com/token")
+    assertion = auth.assertion("https://auth.example.com/token")
+    claims = jwt.decode(
+        assertion, key.public_key(), algorithms=["RS256"], audience="https://auth.example.com/token"
+    )
+    assert claims["sub"] == "client"

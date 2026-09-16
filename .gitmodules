@@ -1,0 +1,3 @@
+[submodule "examples/databricks-mcp"]
+	path = examples/databricks-mcp
+	url = https://github.com/<owner>/databricks-mcp.git

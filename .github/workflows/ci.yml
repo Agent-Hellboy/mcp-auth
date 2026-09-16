@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go ${{ matrix.component }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: auth-server
+            path: auth-server
+          - component: auth-client
+            path: auth-client/go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.13"
+          cache: false
+      - name: Check formatting
+        working-directory: ${{ matrix.path }}
+        run: test -z "$(gofmt -l .)"
+      - name: Test
+        working-directory: ${{ matrix.path }}
+        run: go test ./...
+      - name: Vet
+        working-directory: ${{ matrix.path }}
+        run: go vet ./...
+      - name: Vulnerability scan
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: "1.25.13"
+          go-package: ./...
+          work-dir: ${{ matrix.path }}
+          cache: false
+
+  python:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --locked --extra dev --python ${{ matrix.python-version }}
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy auth-client/python/src
+      - run: uv run pytest -q
+      - run: uv run pip-audit --skip-editable
+      - run: uv build
+      - run: uv build --project auth-client/python
+
+  public-audit:
+    name: Public repository audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check tracked files for secrets and private artifacts
+        shell: bash
+        run: bash scripts/audit-public-repo.sh
+
+  docker:
+    name: Authorization server image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build --tag mcp-auth-server:ci auth-server
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: mcp-auth-server:ci
+          format: table
+          scanners: vuln,secret,misconfig
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
