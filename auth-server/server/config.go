@@ -33,6 +33,12 @@ type Config struct {
 	StoreBackend                string
 	DatabaseURL                 string
 	ResourceClientsFile         string
+	// AllowedClientRedirectURIs restricts dynamic client registration
+	// (POST /register) to these exact redirect_uris when non-empty, in
+	// addition to validRedirect's scheme/host checks. It is populated from
+	// the selected connector's allowed_client_redirect_uris, not set directly
+	// from an environment variable.
+	AllowedClientRedirectURIs []string
 }
 
 // Validate applies deployment safety checks that are intentionally separate

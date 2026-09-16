@@ -9,10 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"math/big"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,17 +23,23 @@ import (
 
 // InteractiveIdentityProvider adds the browser redirect/callback seam needed
 // by an upstream OAuth/OIDC provider while preserving the small core interface.
+// Begin returns the PKCE verifier alongside the redirect location; the caller
+// is responsible for persisting it (in the durable ConsentRequest, keyed by
+// the same state) and passing it back on IdentityCallback.CodeVerifier. It is
+// not kept in the provider itself so it expires with the rest of the pending
+// request and works across replicas.
 type InteractiveIdentityProvider interface {
 	IdentityProvider
-	Begin(context.Context, IdentityRequest, string) (string, error)
+	Begin(context.Context, IdentityRequest, string) (location string, codeVerifier string, err error)
 	Complete(context.Context, IdentityCallback) (Identity, error)
 }
 
 type IdentityCallback struct {
-	Code        string
-	RedirectURI string
-	Nonce       string
-	State       string
+	Code         string
+	RedirectURI  string
+	Nonce        string
+	State        string
+	CodeVerifier string
 }
 
 // OIDCIdentityProvider performs an upstream Authorization Code + PKCE flow and
@@ -40,33 +49,39 @@ type OIDCIdentityProvider struct {
 	Client      *http.Client
 	CallbackURL string
 	Secret      string
-	pending     sync.Map // upstream state -> PKCE verifier
+	// ClientID is the connector's client_id, resolved once at construction
+	// time from either the literal client_id or client_id_env.
+	ClientID string
+	jwks     jwksCache
 }
 
-func NewOIDCIdentityProvider(connector ConnectorConfig, callbackURL string) (*OIDCIdentityProvider, error) {
-	if err := connector.validate("selected", true); err != nil {
+func NewOIDCIdentityProvider(connector ConnectorConfig, callbackURL string, allowInsecure bool) (*OIDCIdentityProvider, error) {
+	if err := connector.validate("selected", allowInsecure); err != nil {
 		return nil, err
 	}
-	if len(connector.AllowedClientRedirectURIs) > 0 && !contains(connector.AllowedClientRedirectURIs, callbackURL) {
-		return nil, errors.New("OIDC callback URL is not in allowed_client_redirect_uris")
+	if len(connector.AllowedUpstreamCallbackURIs) > 0 && !contains(connector.AllowedUpstreamCallbackURIs, callbackURL) {
+		return nil, errors.New("OIDC callback URL is not in allowed_upstream_callback_uris")
 	}
 	secret, err := connectorSecret(connector)
 	if err != nil {
 		return nil, err
 	}
-	return &OIDCIdentityProvider{Connector: connector, Client: http.DefaultClient, CallbackURL: callbackURL, Secret: secret}, nil
+	clientID, err := connector.resolveClientID()
+	if err != nil {
+		return nil, err
+	}
+	return &OIDCIdentityProvider{Connector: connector, Client: http.DefaultClient, CallbackURL: callbackURL, Secret: secret, ClientID: clientID}, nil
 }
 
 func (p *OIDCIdentityProvider) Authenticate(context.Context, IdentityRequest) (Identity, error) {
 	return Identity{}, errors.New("OIDC identity provider requires interactive browser authentication")
 }
 
-func (p *OIDCIdentityProvider) Begin(_ context.Context, request IdentityRequest, state string) (string, error) {
+func (p *OIDCIdentityProvider) Begin(_ context.Context, request IdentityRequest, state string) (string, string, error) {
 	if state == "" || request.Nonce == "" {
-		return "", errors.New("OIDC state and nonce are required")
+		return "", "", errors.New("OIDC state and nonce are required")
 	}
 	codeVerifier := randomID() + randomID()
-	p.pending.Store(state, codeVerifier)
 	digest := sha256.Sum256([]byte(codeVerifier))
 	scopes := append([]string(nil), p.Connector.Scopes...)
 	if len(scopes) == 0 {
@@ -74,7 +89,7 @@ func (p *OIDCIdentityProvider) Begin(_ context.Context, request IdentityRequest,
 	}
 	values := url.Values{
 		"response_type":         {"code"},
-		"client_id":             {p.Connector.ClientID},
+		"client_id":             {p.ClientID},
 		"redirect_uri":          {p.CallbackURL},
 		"scope":                 {strings.Join(scopes, " ")},
 		"state":                 {state},
@@ -82,23 +97,22 @@ func (p *OIDCIdentityProvider) Begin(_ context.Context, request IdentityRequest,
 		"code_challenge":        {base64.RawURLEncoding.EncodeToString(digest[:])},
 		"code_challenge_method": {"S256"},
 	}
-	return p.Connector.AuthorizationEndpoint + "?" + values.Encode(), nil
+	return p.Connector.AuthorizationEndpoint + "?" + values.Encode(), codeVerifier, nil
 }
 
 func (p *OIDCIdentityProvider) Complete(ctx context.Context, callback IdentityCallback) (Identity, error) {
 	if callback.Code == "" || callback.RedirectURI == "" || callback.State == "" {
 		return Identity{}, errors.New("OIDC callback code and redirect URI are required")
 	}
-	form := url.Values{
-		"grant_type":   {"authorization_code"},
-		"code":         {callback.Code},
-		"redirect_uri": {callback.RedirectURI},
-		"client_id":    {p.Connector.ClientID},
-	}
-	if verifier, ok := p.pending.LoadAndDelete(callback.State); ok {
-		form.Set("code_verifier", verifier.(string))
-	} else {
+	if callback.CodeVerifier == "" {
 		return Identity{}, errors.New("OIDC upstream state is invalid or expired")
+	}
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {callback.Code},
+		"redirect_uri":  {callback.RedirectURI},
+		"client_id":     {p.ClientID},
+		"code_verifier": {callback.CodeVerifier},
 	}
 	if p.Client == nil {
 		p.Client = http.DefaultClient
@@ -112,7 +126,7 @@ func (p *OIDCIdentityProvider) Complete(ctx context.Context, callback IdentityCa
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if p.Connector.TokenEndpointAuthMethod == "client_secret_basic" {
-		request.SetBasicAuth(p.Connector.ClientID, p.Secret)
+		request.SetBasicAuth(p.ClientID, p.Secret)
 	}
 	response, err := p.Client.Do(request)
 	if err != nil {
@@ -131,7 +145,7 @@ func (p *OIDCIdentityProvider) Complete(ctx context.Context, callback IdentityCa
 	if tokenResponse.IDToken == "" {
 		return Identity{}, errors.New("OIDC token response has no id_token")
 	}
-	claims, err := verifyOIDCIDToken(ctx, p.Client, p.Connector, tokenResponse.IDToken, callback.Nonce)
+	claims, err := p.verifyIDToken(ctx, tokenResponse.IDToken, callback.Nonce)
 	if err != nil {
 		return Identity{}, err
 	}
@@ -149,8 +163,8 @@ type OIDCTokenExchanger struct {
 	Secret    string
 }
 
-func NewOIDCTokenExchanger(connector ConnectorConfig) (*OIDCTokenExchanger, error) {
-	if err := connector.validate("selected", true); err != nil {
+func NewOIDCTokenExchanger(connector ConnectorConfig, allowInsecure bool) (*OIDCTokenExchanger, error) {
+	if err := connector.validate("selected", allowInsecure); err != nil {
 		return nil, err
 	}
 	secret, err := connectorSecret(connector)
@@ -232,7 +246,7 @@ func connectorSecret(connector ConnectorConfig) (string, error) {
 	return secret, nil
 }
 
-func verifyOIDCIDToken(ctx context.Context, client *http.Client, connector ConnectorConfig, token, expectedNonce string) (map[string]any, error) {
+func (p *OIDCIdentityProvider) verifyIDToken(ctx context.Context, token, expectedNonce string) (map[string]any, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return nil, errors.New("OIDC ID token is malformed")
@@ -248,7 +262,7 @@ func verifyOIDCIDToken(ctx context.Context, client *http.Client, connector Conne
 	if err := decodeJWTPart(parts[1], &claims); err != nil {
 		return nil, errors.New("OIDC ID token claims are invalid")
 	}
-	key, err := fetchRSAKey(ctx, client, connector.JWKSURI, header.KeyID)
+	key, err := p.jwks.resolve(ctx, p.Client, p.Connector.JWKSURI, header.KeyID)
 	if err != nil {
 		return nil, err
 	}
@@ -257,14 +271,20 @@ func verifyOIDCIDToken(ctx context.Context, client *http.Client, connector Conne
 	if err != nil || rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], signature) != nil {
 		return nil, errors.New("OIDC ID token signature is invalid")
 	}
-	if claims["iss"] != connector.Issuer {
+	if claims["iss"] != p.Connector.Issuer {
 		return nil, errors.New("OIDC ID token issuer is invalid")
 	}
-	if !audienceContains(claims["aud"], connector.ClientID) {
+	if !audienceContains(claims["aud"], p.ClientID) {
 		return nil, errors.New("OIDC ID token audience is invalid")
 	}
 	if !validExpiry(claims["exp"]) {
 		return nil, errors.New("OIDC ID token is expired")
+	}
+	if !validIssuedAt(claims["iat"]) {
+		return nil, errors.New("OIDC ID token was issued in the future")
+	}
+	if !validNotBefore(claims["nbf"]) {
+		return nil, errors.New("OIDC ID token is not yet valid")
 	}
 	// The nonce is always generated by this server (authorize sets one when the
 	// client omits it), so a missing or mismatched nonce always means the ID
@@ -297,23 +317,86 @@ func audienceContains(value any, expected string) bool {
 	return false
 }
 
+// clockSkewTolerance absorbs small clock drift between this server and the
+// systems that mint tokens it verifies: upstream OIDC providers for ID
+// tokens, and this server's own clock for its previously-issued access
+// tokens checked as token-exchange subject_tokens.
+const clockSkewTolerance = 2 * time.Minute
+
 func validExpiry(value any) bool {
 	seconds, ok := value.(float64)
-	return ok && time.Now().Unix() < int64(seconds)
+	return ok && time.Now().Add(-clockSkewTolerance).Unix() < int64(seconds)
 }
 
-func fetchRSAKey(ctx context.Context, client *http.Client, endpoint, keyID string) (*rsa.PublicKey, error) {
+func validIssuedAt(value any) bool {
+	seconds, ok := value.(float64)
+	if !ok {
+		return false
+	}
+	return int64(seconds) <= time.Now().Add(clockSkewTolerance).Unix()
+}
+
+func validNotBefore(value any) bool {
+	if value == nil {
+		return true
+	}
+	seconds, ok := value.(float64)
+	if !ok {
+		return false
+	}
+	return int64(seconds) <= time.Now().Add(clockSkewTolerance).Unix()
+}
+
+const (
+	// defaultJWKSCacheTTL applies when the JWKS response has no usable
+	// Cache-Control max-age, bounding how long a rotated-out key stays trusted.
+	defaultJWKSCacheTTL = 5 * time.Minute
+	// maxJWKSResponseBytes bounds how much of a JWKS response body this
+	// server will read, regardless of what the upstream server claims to send.
+	maxJWKSResponseBytes = 1 << 20
+)
+
+// jwksCache holds one connector's fetched RSA signing keys, keyed by kid, so
+// verifying an ID token doesn't refetch the upstream JWKS on every request.
+// It refreshes on expiry (per Cache-Control max-age, or defaultJWKSCacheTTL)
+// and also refreshes early when asked for a kid it doesn't have, since key
+// rotation can introduce a new kid before the cache would otherwise expire.
+type jwksCache struct {
+	mu        sync.Mutex
+	keys      map[string]*rsa.PublicKey
+	expiresAt time.Time
+}
+
+func (c *jwksCache) resolve(ctx context.Context, client *http.Client, endpoint, keyID string) (*rsa.PublicKey, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if key, ok := c.keys[keyID]; ok && time.Now().Before(c.expiresAt) {
+		return key, nil
+	}
+	keys, ttl, err := fetchJWKS(ctx, client, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	c.keys, c.expiresAt = keys, time.Now().Add(ttl)
+	key, ok := keys[keyID]
+	if !ok {
+		return nil, errors.New("OIDC JWKS signing key was not found")
+	}
+	return key, nil
+}
+
+func fetchJWKS(ctx context.Context, client *http.Client, endpoint string) (map[string]*rsa.PublicKey, time.Duration, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create JWKS request: %w", err)
+		return nil, 0, fmt.Errorf("create JWKS request: %w", err)
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("fetch OIDC JWKS: %w", err)
+		return nil, 0, fmt.Errorf("fetch OIDC JWKS: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("OIDC JWKS returned HTTP %d", response.StatusCode)
+		return nil, 0, fmt.Errorf("OIDC JWKS returned HTTP %d", response.StatusCode)
 	}
 	var document struct {
 		Keys []struct {
@@ -323,19 +406,60 @@ func fetchRSAKey(ctx context.Context, client *http.Client, endpoint, keyID strin
 			E       string `json:"e"`
 		} `json:"keys"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&document); err != nil {
-		return nil, fmt.Errorf("decode OIDC JWKS: %w", err)
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxJWKSResponseBytes)).Decode(&document); err != nil {
+		return nil, 0, fmt.Errorf("decode OIDC JWKS: %w", err)
 	}
+	keys := make(map[string]*rsa.PublicKey, len(document.Keys))
 	for _, candidate := range document.Keys {
-		if candidate.KeyType != "RSA" || candidate.KeyID != keyID {
+		if candidate.KeyType != "RSA" || candidate.KeyID == "" {
 			continue
 		}
 		n, errN := base64.RawURLEncoding.DecodeString(candidate.N)
 		e, errE := base64.RawURLEncoding.DecodeString(candidate.E)
 		if errN != nil || errE != nil {
-			return nil, errors.New("OIDC JWKS RSA key is malformed")
+			continue
 		}
-		return &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: int(new(big.Int).SetBytes(e).Int64())}, nil
+		exponent, err := rsaExponent(e)
+		if err != nil {
+			continue
+		}
+		keys[candidate.KeyID] = &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: exponent}
 	}
-	return nil, errors.New("OIDC JWKS signing key was not found")
+	if len(keys) == 0 {
+		return nil, 0, errors.New("OIDC JWKS has no usable RSA keys")
+	}
+	return keys, jwksCacheTTL(response.Header.Get("Cache-Control")), nil
+}
+
+func jwksCacheTTL(cacheControl string) time.Duration {
+	for _, directive := range strings.Split(cacheControl, ",") {
+		name, value, ok := strings.Cut(strings.TrimSpace(directive), "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(name), "max-age") {
+			continue
+		}
+		if seconds, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+	}
+	return defaultJWKSCacheTTL
+}
+
+// rsaExponent decodes a JWK "e" value into an rsa.PublicKey.E. big.Int.Int64
+// is documented as undefined when the value doesn't fit in an int64, and a
+// real RSA public exponent is always tiny (3 or 65537 in practice), so a
+// four-byte cap plus an explicit range check rejects a malformed or
+// oversized exponent instead of silently producing an undefined key.
+func rsaExponent(data []byte) (int, error) {
+	if len(data) == 0 || len(data) > 4 {
+		return 0, errors.New("RSA exponent has an invalid length")
+	}
+	value := new(big.Int).SetBytes(data)
+	if !value.IsInt64() {
+		return 0, errors.New("RSA exponent is too large")
+	}
+	exponent := value.Int64()
+	if exponent <= 0 || exponent > math.MaxInt32 {
+		return 0, errors.New("RSA exponent is out of range")
+	}
+	return int(exponent), nil
 }

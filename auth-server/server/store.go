@@ -51,6 +51,11 @@ type ConsentRequest struct {
 	Request   AuthorizationRequest
 	Nonce     string
 	ExpiresAt time.Time
+	// CodeVerifier is this server's own PKCE verifier for the upstream OIDC
+	// authorization request, set once Begin() has produced it. It lives here
+	// instead of an in-process map so it expires with the rest of the pending
+	// request and is visible to whichever replica handles the callback.
+	CodeVerifier string
 }
 
 type Store interface {

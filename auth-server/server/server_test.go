@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -62,6 +63,118 @@ func TestConnectorLoaderRejectsLiteralSecretAndAcceptsProviderConfig(t *testing.
 	connectors, err := LoadConnectors(path)
 	if err != nil || connectors["provider"].Issuer != "https://idp.example.com" {
 		t.Fatalf("load connector: %v", err)
+	}
+}
+
+func TestConnectorClientIDEnvIndirection(t *testing.T) {
+	direct := ConnectorConfig{ClientID: "literal-client"}
+	clientID, err := direct.resolveClientID()
+	if err != nil || clientID != "literal-client" {
+		t.Fatalf("resolve literal client_id: %v, %q", err, clientID)
+	}
+
+	t.Setenv("TEST_CONNECTOR_CLIENT_ID", "  from-env  ")
+	viaEnv := ConnectorConfig{ClientIDEnv: "TEST_CONNECTOR_CLIENT_ID"}
+	clientID, err = viaEnv.resolveClientID()
+	if err != nil || clientID != "from-env" {
+		t.Fatalf("resolve client_id_env: %v, %q", err, clientID)
+	}
+
+	t.Setenv("TEST_CONNECTOR_CLIENT_ID_EMPTY", "")
+	empty := ConnectorConfig{ClientIDEnv: "TEST_CONNECTOR_CLIENT_ID_EMPTY"}
+	if _, err := empty.resolveClientID(); err == nil {
+		t.Fatal("expected an empty client_id_env value to be rejected")
+	}
+
+	both := ConnectorConfig{Issuer: "https://idp.example.com", AuthorizationEndpoint: "https://idp.example.com/authorize", TokenEndpoint: "https://idp.example.com/token", JWKSURI: "https://idp.example.com/jwks", ClientID: "literal", ClientIDEnv: "TEST_CONNECTOR_CLIENT_ID", TokenEndpointAuthMethod: "none", ExchangeClientID: "exchange", MCPScopes: []string{"tools:read"}}
+	if err := both.validate("both", false); err == nil {
+		t.Fatal("expected setting both client_id and client_id_env to be rejected")
+	}
+}
+
+func TestRegisterEnforcesAllowedClientRedirectURIs(t *testing.T) {
+	instance := testServer(t)
+	instance.Config.RegistrationEnabled = true
+	instance.Config.AllowedClientRedirectURIs = []string{"https://client.example.com/callback"}
+
+	rejected := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(`{"client_name":"x","redirect_uris":["https://not-allowed.example.com/callback"],"token_endpoint_auth_method":"none"}`))
+	rejectedRecorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(rejectedRecorder, rejected)
+	if rejectedRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected a redirect_uri outside the allowlist to be rejected, got %d: %s", rejectedRecorder.Code, rejectedRecorder.Body.String())
+	}
+
+	allowed := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(`{"client_name":"x","redirect_uris":["https://client.example.com/callback"],"token_endpoint_auth_method":"none"}`))
+	allowedRecorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(allowedRecorder, allowed)
+	if allowedRecorder.Code != http.StatusCreated {
+		t.Fatalf("expected an allowlisted redirect_uri to succeed, got %d: %s", allowedRecorder.Code, allowedRecorder.Body.String())
+	}
+}
+
+// TestSQLiteStoreMigratesPreviousSchema opens a database created with the
+// schema shipped before public_key_pem/client_assertions/code_verifier
+// existed (schema version 0, unset PRAGMA user_version) and asserts that
+// NewSQLiteStore migrates it in place instead of crash-looping, as it would
+// against a real upgrade of a deployed database.
+func TestSQLiteStoreMigratesPreviousSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+CREATE TABLE clients (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, redirect_uris TEXT NOT NULL,
+  token_endpoint_auth TEXT NOT NULL, secret_hash TEXT NOT NULL
+);
+CREATE TABLE authorization_codes (
+  value_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL,
+  code_challenge TEXT NOT NULL, scope TEXT NOT NULL, resource TEXT NOT NULL,
+  subject TEXT NOT NULL, nonce TEXT NOT NULL, expires_at INTEGER NOT NULL, used INTEGER NOT NULL
+);
+CREATE TABLE refresh_tokens (
+  value_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, subject TEXT NOT NULL,
+  scope TEXT NOT NULL, resource TEXT NOT NULL, expires_at INTEGER NOT NULL,
+  used INTEGER NOT NULL, revoked INTEGER NOT NULL
+);
+CREATE TABLE consent_requests (
+  value_hash TEXT PRIMARY KEY, request_json TEXT NOT NULL, nonce TEXT NOT NULL, expires_at INTEGER NOT NULL
+);
+INSERT INTO clients (id,name,redirect_uris,token_endpoint_auth,secret_hash)
+VALUES ('legacy-client','legacy','["https://client.example.com/callback"]','none','');
+`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatalf("migrate previous-version database: %v", err)
+	}
+	defer store.Close()
+
+	if _, err := store.GetClient("legacy-client"); err != nil {
+		t.Fatalf("pre-existing client did not survive migration: %v", err)
+	}
+	if err := store.SaveClient(Client{ID: "resource-server", TokenEndpointAuth: "private_key_jwt", PublicKeyPEM: "test"}); err != nil {
+		t.Fatalf("save client using migrated column: %v", err)
+	}
+	client, err := store.GetClient("resource-server")
+	if err != nil || client.PublicKeyPEM != "test" {
+		t.Fatalf("public_key_pem did not round-trip after migration: %v, %+v", err, client)
+	}
+	if err := store.ConsumeClientAssertionJTI("resource-server", "jti-1", time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("client_assertions table missing after migration: %v", err)
+	}
+	if err := store.SaveConsentRequest(ConsentRequest{ValueHash: HashSecret("state"), Nonce: "n", CodeVerifier: "verifier", ExpiresAt: time.Now().Add(time.Minute)}); err != nil {
+		t.Fatalf("save consent request using migrated column: %v", err)
+	}
+	consent, err := store.ConsumeConsentRequest("state", time.Now())
+	if err != nil || consent.CodeVerifier != "verifier" {
+		t.Fatalf("code_verifier did not round-trip after migration: %v, %+v", err, consent)
 	}
 }
 

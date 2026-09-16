@@ -18,10 +18,18 @@ Important settings:
 - `MCP_AUTH_CONNECTORS_FILE`: JSON file containing named upstream connectors.
 - `MCP_AUTH_CONNECTOR`: selected connector name. Local identity/token exchange is available only when
   `MCP_AUTH_LOCAL_DEVELOPMENT=true`; production starts only with a named connector.
-- `MCP_AUTH_REGISTRATION_ENABLED`: disable open registration unless policy permits it.
+- `MCP_AUTH_REGISTRATION_ENABLED`: disable open registration unless policy permits it. Defaults to
+  `false`, but Cursor and Claude both perform dynamic client registration (`POST /register`) before
+  their first connection, with no fallback to a pre-registered client. A real deployment serving
+  either of them must set this to `true`, or the first connection attempt fails with no obvious
+  cause pointing back to this setting. Combine it with `AllowedClientRedirectURIs` (below) rather
+  than leaving registration fully open if the deployment can enumerate its expected clients.
 - `MCP_AUTH_ALLOWED_SCOPES`: space-independent comma-separated scope allowlist.
 - `MCP_AUTH_TRUSTED_ORIGINS`: exact CORS origins; keep this restrictive.
-- `MCP_AUTH_REQUIRE_HTTPS`: enable outside local development.
+- `MCP_AUTH_REQUIRE_HTTPS`: enable outside local development. With a plain-HTTP `MCP_AUTH_ISSUER`,
+  the upstream redirect_uri this server registers becomes `http://.../identity/callback`, which most
+  providers (including Databricks) reject for anything other than `localhost`/`127.0.0.1`. An
+  HTTP issuer only works for local development or behind an SSH tunnel to loopback.
 - `MCP_AUTH_LOCAL_CLIENT_ID`: local-development-only pre-registered client used by
   the Compose token-exchange test; leave it empty outside local development.
 - `MCP_AUTH_RESOURCE_CLIENTS_FILE`: JSON array of resource servers pre-provisioned to
@@ -52,9 +60,24 @@ The configured RSA key signs RS256 access tokens. For key rotation, deploy a key
 
 Connector files are keyed JSON objects. They contain upstream endpoints, client
 IDs, requested scopes, MCP scopes, and `client_secret_env`—the name of an
-environment variable, never a literal secret. The same connector can provide
-interactive identity and RFC 8693 downstream exchange. All provider-specific
-behavior is behind `IdentityProvider` and `TokenExchanger` interfaces.
+environment variable, never a literal secret. `client_id` can likewise be
+supplied indirectly as `client_id_env`; set exactly one of the two. The same
+connector can provide interactive identity and RFC 8693 downstream exchange.
+All provider-specific behavior is behind `IdentityProvider` and
+`TokenExchanger` interfaces.
+
+A connector has two independent, optional redirect allowlists that are easy to
+conflate because they're both "redirect URIs":
+
+- `allowed_upstream_callback_uris`: which of this server's own
+  `MCP_AUTH_ISSUER`-derived `/identity/callback` URLs may be used when
+  registering with the connector's upstream provider. This guards the
+  server's own registration, not an MCP client's redirect.
+- `allowed_client_redirect_uris`: which `redirect_uris` an MCP client (Cursor,
+  Claude Desktop, ...) may request through dynamic client registration, in
+  addition to the HTTPS-or-loopback check `POST /register` always applies.
+  Leave it empty for clients that use a loopback listener on an
+  unpredictable port, since an allowlist can only match exact values.
 
 ## Persistence
 

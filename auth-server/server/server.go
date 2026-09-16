@@ -166,17 +166,17 @@ func (s *Server) finishConsent(w http.ResponseWriter, r *http.Request, consentID
 	}
 	if interactive, ok := s.IdentityProvider.(InteractiveIdentityProvider); ok {
 		upstreamState := randomID()
-		if err := s.Store.SaveConsentRequest(ConsentRequest{
-			ValueHash: HashSecret(upstreamState), Request: request, Nonce: pending.Nonce,
-			ExpiresAt: s.now().Add(s.Config.AuthorizationCodeTTL),
-		}); err != nil {
-			oauthError(w, http.StatusInternalServerError, "server_error")
-			return
-		}
-		location, err := interactive.Begin(r.Context(), IdentityRequest{
+		location, codeVerifier, err := interactive.Begin(r.Context(), IdentityRequest{
 			ClientID: request.ClientID, Nonce: pending.Nonce, Resource: request.Resource, Scopes: request.Scope,
 		}, upstreamState)
 		if err != nil {
+			oauthError(w, http.StatusInternalServerError, "server_error")
+			return
+		}
+		if err := s.Store.SaveConsentRequest(ConsentRequest{
+			ValueHash: HashSecret(upstreamState), Request: request, Nonce: pending.Nonce,
+			ExpiresAt: s.now().Add(s.Config.AuthorizationCodeTTL), CodeVerifier: codeVerifier,
+		}); err != nil {
 			oauthError(w, http.StatusInternalServerError, "server_error")
 			return
 		}
@@ -209,6 +209,7 @@ func (s *Server) identityCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	identity, err := interactive.Complete(r.Context(), IdentityCallback{
 		Code: r.URL.Query().Get("code"), RedirectURI: strings.TrimRight(s.Config.Issuer, "/") + "/identity/callback", Nonce: pending.Nonce, State: state,
+		CodeVerifier: pending.CodeVerifier,
 	})
 	if err != nil {
 		redirectError(w, r, pending.Request, "access_denied", "upstream identity authentication failed", s.Config.Issuer, s.Config.AuthorizationResponseIssuer)
@@ -390,6 +391,10 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, redirectURI := range input.RedirectURIs {
 		if !validRedirect(redirectURI) {
+			oauthError(w, http.StatusBadRequest, "invalid_redirect_uri")
+			return
+		}
+		if len(s.Config.AllowedClientRedirectURIs) > 0 && !contains(s.Config.AllowedClientRedirectURIs, redirectURI) {
 			oauthError(w, http.StatusBadRequest, "invalid_redirect_uri")
 			return
 		}

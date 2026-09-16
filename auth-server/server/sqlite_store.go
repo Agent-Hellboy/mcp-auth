@@ -40,8 +40,27 @@ func NewSQLiteStore(databaseURL string) (*SQLiteStore, error) {
 
 func (s *SQLiteStore) Close() error { return s.db.Close() }
 
-func (s *SQLiteStore) initialize() error {
-	_, err := s.db.Exec(`
+// currentSchemaVersion is tracked via PRAGMA user_version. Bump it and add an
+// entry to migrations whenever the schema changes, so upgrading over an
+// existing database file applies exactly the missing ALTER/CREATE statements
+// instead of relying on CREATE TABLE IF NOT EXISTS, which silently no-ops on
+// a table that already exists in its old shape.
+const currentSchemaVersion = 1
+
+// migrations[v] takes a database at schema version v to v+1. Statements must
+// be additive and safe to run inside a single transaction alongside the
+// PRAGMA user_version update that follows them.
+var migrations = map[int]string{
+	0: `
+ALTER TABLE clients ADD COLUMN public_key_pem TEXT NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS client_assertions (
+  client_id TEXT NOT NULL, jti TEXT NOT NULL, expires_at INTEGER NOT NULL,
+  PRIMARY KEY (client_id, jti)
+);
+ALTER TABLE consent_requests ADD COLUMN code_verifier TEXT NOT NULL DEFAULT '';`,
+}
+
+const freshSchema = `
 CREATE TABLE IF NOT EXISTS clients (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, redirect_uris TEXT NOT NULL,
   token_endpoint_auth TEXT NOT NULL, secret_hash TEXT NOT NULL, public_key_pem TEXT NOT NULL DEFAULT ''
@@ -61,12 +80,53 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
   used INTEGER NOT NULL, revoked INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS consent_requests (
-  value_hash TEXT PRIMARY KEY, request_json TEXT NOT NULL, nonce TEXT NOT NULL, expires_at INTEGER NOT NULL
-);`)
-	if err != nil {
-		return fmt.Errorf("initialize sqlite store: %w", err)
+  value_hash TEXT PRIMARY KEY, request_json TEXT NOT NULL, nonce TEXT NOT NULL, expires_at INTEGER NOT NULL,
+  code_verifier TEXT NOT NULL DEFAULT ''
+);`
+
+func (s *SQLiteStore) initialize() error {
+	var exists int
+	if err := s.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='clients'`).Scan(&exists); err != nil {
+		return fmt.Errorf("inspect sqlite schema: %w", err)
 	}
-	return nil
+	if exists == 0 {
+		if _, err := s.db.Exec(freshSchema); err != nil {
+			return fmt.Errorf("initialize sqlite store: %w", err)
+		}
+		if _, err := s.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", currentSchemaVersion)); err != nil {
+			return fmt.Errorf("set sqlite schema version: %w", err)
+		}
+		return nil
+	}
+	return s.migrate()
+}
+
+func (s *SQLiteStore) migrate() error {
+	var version int
+	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read sqlite schema version: %w", err)
+	}
+	if version >= currentSchemaVersion {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for v := version; v < currentSchemaVersion; v++ {
+		statement, ok := migrations[v]
+		if !ok {
+			return fmt.Errorf("no migration registered from schema version %d", v)
+		}
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("apply migration from schema version %d: %w", v, err)
+		}
+	}
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", currentSchemaVersion)); err != nil {
+		return fmt.Errorf("set sqlite schema version: %w", err)
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) SaveClient(client Client) error {
@@ -232,8 +292,8 @@ func (s *SQLiteStore) SaveConsentRequest(request ConsentRequest) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`INSERT OR REPLACE INTO consent_requests (value_hash,request_json,nonce,expires_at)
-VALUES (?,?,?,?)`, request.ValueHash, string(data), request.Nonce, request.ExpiresAt.UnixNano())
+	_, err = s.db.Exec(`INSERT OR REPLACE INTO consent_requests (value_hash,request_json,nonce,expires_at,code_verifier)
+VALUES (?,?,?,?,?)`, request.ValueHash, string(data), request.Nonce, request.ExpiresAt.UnixNano(), request.CodeVerifier)
 	return err
 }
 
@@ -246,8 +306,8 @@ func (s *SQLiteStore) ConsumeConsentRequest(value string, now time.Time) (Consen
 	var request ConsentRequest
 	var data string
 	var expires int64
-	err = tx.QueryRow(`SELECT request_json,nonce,expires_at FROM consent_requests WHERE value_hash=?`, HashSecret(value)).
-		Scan(&data, &request.Nonce, &expires)
+	err = tx.QueryRow(`SELECT request_json,nonce,expires_at,code_verifier FROM consent_requests WHERE value_hash=?`, HashSecret(value)).
+		Scan(&data, &request.Nonce, &expires, &request.CodeVerifier)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConsentRequest{}, ErrNotFound
 	}

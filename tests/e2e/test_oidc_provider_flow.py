@@ -305,7 +305,7 @@ def test_runtime_oidc_connector_and_downstream_tools_call() -> None:
             "mcp_scopes": ["tools:read"],
             "exchange_client_id": "mock-exchange-client",
             "token_endpoint_auth_method": "none",
-            "allowed_client_redirect_uris": [callback_uri],
+            "allowed_upstream_callback_uris": [callback_uri],
         }
     }
     with tempfile.TemporaryDirectory() as temporary_directory:

@@ -7,22 +7,36 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 )
 
 // ConnectorConfig describes one provider-neutral upstream OAuth connector.
 // Secrets are referenced by environment variable name and are never stored in
 // this structure as literal configuration values.
 type ConnectorConfig struct {
-	Issuer                    string   `json:"issuer"`
-	AuthorizationEndpoint     string   `json:"authorization_endpoint"`
-	TokenEndpoint             string   `json:"token_endpoint"`
-	JWKSURI                   string   `json:"jwks_uri"`
-	ClientID                  string   `json:"client_id"`
-	ClientSecretEnv           string   `json:"client_secret_env"`
-	Scopes                    []string `json:"scopes"`
-	MCPScopes                 []string `json:"mcp_scopes"`
-	ExchangeClientID          string   `json:"exchange_client_id"`
-	TokenEndpointAuthMethod   string   `json:"token_endpoint_auth_method"`
+	Issuer                  string   `json:"issuer"`
+	AuthorizationEndpoint   string   `json:"authorization_endpoint"`
+	TokenEndpoint           string   `json:"token_endpoint"`
+	JWKSURI                 string   `json:"jwks_uri"`
+	ClientID                string   `json:"client_id"`
+	ClientIDEnv             string   `json:"client_id_env"`
+	ClientSecretEnv         string   `json:"client_secret_env"`
+	Scopes                  []string `json:"scopes"`
+	MCPScopes               []string `json:"mcp_scopes"`
+	ExchangeClientID        string   `json:"exchange_client_id"`
+	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+	// AllowedUpstreamCallbackURIs restricts which of this server's own
+	// identity-callback URLs (MCP_AUTH_ISSUER + /identity/callback) may be
+	// registered with this connector's upstream provider. This guards the
+	// server's own registration with the upstream, not an MCP client's
+	// redirect_uri. Optional: empty means any derived callback is accepted.
+	AllowedUpstreamCallbackURIs []string `json:"allowed_upstream_callback_uris"`
+	// AllowedClientRedirectURIs restricts which redirect_uris an MCP client
+	// (Cursor, Claude Desktop, ...) may register via dynamic client
+	// registration, in addition to the scheme/host checks validRedirect
+	// already applies. Optional: empty means any redirect_uri that passes
+	// validRedirect is accepted, which is required for clients using a
+	// loopback listener on an unpredictable port.
 	AllowedClientRedirectURIs []string `json:"allowed_client_redirect_uris"`
 }
 
@@ -42,8 +56,11 @@ func (c ConnectorConfig) validate(name string, allowInsecure bool) error {
 			return fmt.Errorf("connector %q has non-HTTPS %s", name, field)
 		}
 	}
-	if c.ClientID == "" {
-		return fmt.Errorf("connector %q is missing client_id", name)
+	if c.ClientID == "" && c.ClientIDEnv == "" {
+		return fmt.Errorf("connector %q is missing client_id or client_id_env", name)
+	}
+	if c.ClientID != "" && c.ClientIDEnv != "" {
+		return fmt.Errorf("connector %q must set only one of client_id or client_id_env", name)
 	}
 	if c.TokenEndpointAuthMethod == "" {
 		return fmt.Errorf("connector %q is missing token_endpoint_auth_method", name)
@@ -60,13 +77,38 @@ func (c ConnectorConfig) validate(name string, allowInsecure bool) error {
 	if len(c.MCPScopes) == 0 {
 		return fmt.Errorf("connector %q is missing mcp_scopes", name)
 	}
+	for _, redirectURI := range c.AllowedUpstreamCallbackURIs {
+		if err := validAbsoluteURI(redirectURI); err != nil {
+			return fmt.Errorf("connector %q has an invalid allowed upstream callback URI: %w", name, err)
+		}
+	}
 	for _, redirectURI := range c.AllowedClientRedirectURIs {
-		parsed, err := url.Parse(redirectURI)
-		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Fragment != "" {
-			return fmt.Errorf("connector %q has invalid allowed client redirect URI", name)
+		if err := validAbsoluteURI(redirectURI); err != nil {
+			return fmt.Errorf("connector %q has an invalid allowed client redirect URI: %w", name, err)
 		}
 	}
 	return nil
+}
+
+func validAbsoluteURI(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Fragment != "" {
+		return errors.New("must be an absolute URI with no fragment")
+	}
+	return nil
+}
+
+// resolveClientID returns the connector's OAuth client_id, reading it from
+// the environment when client_id_env is set instead of a literal value.
+func (c ConnectorConfig) resolveClientID() (string, error) {
+	if c.ClientIDEnv == "" {
+		return c.ClientID, nil
+	}
+	value := strings.TrimSpace(os.Getenv(c.ClientIDEnv))
+	if value == "" {
+		return "", fmt.Errorf("client id environment variable %q is empty", c.ClientIDEnv)
+	}
+	return value, nil
 }
 
 // LoadConnectors reads a JSON object keyed by connector name. A literal
