@@ -16,8 +16,10 @@ Important settings:
 - `MCP_AUTH_STORE`: `memory` for tests/local development or `sqlite` for durable single-node deployments.
 - `MCP_AUTH_DATABASE_URL`: SQLite path when `MCP_AUTH_STORE=sqlite`.
 - `MCP_AUTH_CONNECTORS_FILE`: JSON file containing named upstream connectors.
-- `MCP_AUTH_CONNECTOR`: selected connector name. Local identity/token exchange is available only when
-  `MCP_AUTH_LOCAL_DEVELOPMENT=true`; production starts only with a named connector.
+- `MCP_AUTH_CONNECTOR`: selected connector name. One running process serves exactly one connector and one
+  `MCP_AUTH_RESOURCE`, by design — see [Serving multiple resources](#serving-multiple-resources) below for
+  more than one. Local identity/token exchange is available only when `MCP_AUTH_LOCAL_DEVELOPMENT=true`;
+  production starts only with a named connector.
 - `MCP_AUTH_REGISTRATION_ENABLED`: disable open registration unless policy permits it. Defaults to
   `false`, but Cursor and Claude both perform dynamic client registration (`POST /register`) before
   their first connection, with no fallback to a pre-registered client. A real deployment serving
@@ -154,6 +156,54 @@ validates the subject token and obtains a credential for the downstream audience
 Do not use a Docker volume as the authoritative credential/state store for a multi-instance deployment. Volumes are node-local and create failover, backup, encryption, and access-control problems. A volume is acceptable only as a tightly controlled single-node development or explicitly managed single-node deployment choice. The enterprise default is a shared encrypted database for OAuth state and a secret manager/KMS/HSM for signing keys and confidential client credentials. Implement `Store` and `KeyProvider` adapters for the chosen services; the HTTP handlers do not change.
 
 The built-in `LocalKeyProvider` wraps the development PEM loader and ephemeral generated key. Production should replace it with a `KeyProvider` backed by KMS/HSM signing or a secret manager with rotation support. The server never needs to persist raw refresh tokens or client secrets: it stores hashes, and the secret provider owns private key material.
+
+## Serving multiple resources
+
+One `auth-server` process is deliberately scoped to exactly one connector and
+one `MCP_AUTH_RESOURCE`: `Config.Resource` is a single value, `/authorize`
+rejects any `resource` parameter that doesn't match it exactly, and
+`MCP_AUTH_CONNECTOR` selects exactly one entry out of `MCP_AUTH_CONNECTORS_FILE`
+even when that file defines several. A connectors file with multiple entries
+is for choosing between them across deployments (a staging connector and a
+production connector, say), not for one running server to serve several
+resources at once.
+
+To front more than one resource server or upstream provider, run one
+`auth-server` process per resource — each with its own `MCP_AUTH_CONNECTOR`,
+`MCP_AUTH_RESOURCE`, and `MCP_AUTH_LISTEN_ADDR` — behind a shared reverse
+proxy that routes by hostname or path. Nothing in the current design prevents
+this; it's an ordinary multi-instance deployment; only the routing in front
+of it changes. For example, with Caddy routing by hostname:
+
+```caddyfile
+databricks-auth.example.com {
+    reverse_proxy 127.0.0.1:8081
+}
+
+internal-api-auth.example.com {
+    reverse_proxy 127.0.0.1:8082
+}
+```
+
+Each backend is a separate `auth-server` process, e.g.:
+
+```bash
+MCP_AUTH_ISSUER=https://databricks-auth.example.com \
+MCP_AUTH_RESOURCE=https://mcp.example.com/databricks/mcp \
+MCP_AUTH_CONNECTOR=databricks \
+MCP_AUTH_LISTEN_ADDR=127.0.0.1:8081 \
+go run ./auth-server/cmd/auth-server &
+
+MCP_AUTH_ISSUER=https://internal-api-auth.example.com \
+MCP_AUTH_RESOURCE=https://mcp.example.com/internal-api/mcp \
+MCP_AUTH_CONNECTOR=internal-api \
+MCP_AUTH_LISTEN_ADDR=127.0.0.1:8082 \
+go run ./auth-server/cmd/auth-server &
+```
+
+Each instance needs its own `MCP_AUTH_DATABASE_URL` (or its own credentials
+to a shared database) so their client registrations, consent state, and
+signing keys don't collide.
 
 ## Production checklist
 
