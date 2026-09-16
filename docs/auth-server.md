@@ -68,7 +68,21 @@ The configured RSA key signs RS256 access tokens. For key rotation, deploy a key
 
 ## Client registration and consent
 
-`POST /register` accepts `client_name`, exact `redirect_uris`, and `token_endpoint_auth_method`. Public clients use `none`; confidential clients may use client-secret authentication. Redirects must be HTTPS or localhost and are matched exactly.
+`POST /register` accepts `client_name`, exact `redirect_uris`, and `token_endpoint_auth_method`. Public clients use `none`; confidential clients may use client-secret authentication. Redirect URIs are matched exactly, and must take one of the shapes RFC 8252 (*OAuth 2.0 for Native Apps*) defines, since that is the profile MCP desktop clients follow:
+
+- `https://` with a host — for example `https://claude.ai/api/mcp/auth_callback`.
+- `http://` **only** on loopback: `127.0.0.1`, `[::1]`, or `localhost`. RFC 8252
+  §7.3 requires both address families, because a client binding a loopback
+  listener cannot know which one the OS will give it.
+- A private-use URI scheme (RFC 8252 §7.1) — `claude://oauth/callback`,
+  `cursor://…`, `com.example.app:/oauth/callback`. These have no meaningful
+  authority component, so no host is required.
+
+Plaintext `http://` to any non-loopback host is rejected. Admitting private-use
+schemes broadly is safe because PKCE `S256` is mandatory and `/authorize`
+matches the registered `redirect_uri` exactly; a deployment that wants to
+restrict which clients may register sets the connector's
+`allowed_client_redirect_uris`, which `/register` enforces when non-empty.
 
 `GET /authorize` requires `response_type=code`, `code_challenge_method=S256`, `code_challenge`, `resource`, and a registered redirect URI. It renders a consent page. In production, accepting consent redirects to the selected connector's upstream authorization endpoint and `/identity/callback` completes the upstream code flow. Local development also supports `approve=true` to exercise the flow without a browser.
 
@@ -160,6 +174,56 @@ conflate because they're both "redirect URIs":
   addition to the HTTPS-or-loopback check `POST /register` always applies.
   Leave it empty for clients that use a loopback listener on an
   unpredictable port, since an allowlist can only match exact values.
+
+## Verified identity providers
+
+The server is provider-neutral by construction, but "neutral" is only a claim
+until it is run against providers that share no code. These were verified end
+to end — dynamic client registration, consent, upstream login, ID token
+verification, `upstream_session` storage, MCP token issuance, and an
+authenticated `tools/call` on a resource server — changing **nothing but the
+connector entry**.
+
+| Provider | Result | Notes |
+| --- | --- | --- |
+| Keycloak 26 | verified | Signs RS256. Sets session cookies `SameSite=None`, which forces `Secure`; browsers treat `http://localhost` as a secure context, non-browser test harnesses often do not. |
+| Dex | verified | Signs RS256. `skipApprovalScreen: true` removes a second consent step that is redundant when this server already renders one. |
+| Authelia | not supported on plaintext loopback | Refuses a cookie domain without a period and requires an HTTPS `authelia_url`. An Authelia policy, not a limitation here; it needs a dotted hostname and TLS. |
+
+### Split public and internal endpoints
+
+A connector's endpoints are configured individually, which matters more than it
+first appears. The browser and this server usually reach a provider by
+different names — the browser through a published address, this server over an
+internal network — and only the browser-facing ones may be rewritten:
+
+```json
+{
+  "issuer": "http://localhost:6350/realms/mcp",
+  "authorization_endpoint": "http://localhost:6350/realms/mcp/protocol/openid-connect/auth",
+  "token_endpoint": "http://keycloak.internal:6350/realms/mcp/protocol/openid-connect/token",
+  "jwks_uri": "http://keycloak.internal:6350/realms/mcp/protocol/openid-connect/certs"
+}
+```
+
+`issuer` and `authorization_endpoint` must be what the **browser** resolves,
+because `issuer` is compared against the ID token's `iss` claim and the user is
+redirected to `authorization_endpoint`. `token_endpoint` and `jwks_uri` are
+back-channel calls this server makes itself, so they take the internal name.
+
+Leaving the back-channel endpoints blank triggers discovery instead, which is
+simpler — but discovery resolves them relative to `issuer`, so it only works
+when one name reaches the provider from both sides.
+
+### Loopback deployments
+
+`localhost` and `127.0.0.1` are different strings to an issuer or audience
+comparison even though they resolve to the same host, so `MCP_AUTH_ISSUER`,
+`MCP_AUTH_RESOURCE`, the connector's `allowed_upstream_callback_uris`, the
+redirect URI registered with the upstream provider, and the URL handed to the
+MCP client must all agree on one spelling. Publishing a container port with
+`-p 127.0.0.1:…` binds IPv4 only, so a client resolving `localhost` to `::1`
+will fail to connect with no useful error.
 
 ## Persistence
 

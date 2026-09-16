@@ -582,12 +582,38 @@ func validPKCE(verifier, challenge string) bool {
 	encoded := base64.RawURLEncoding.EncodeToString(digest[:])
 	return subtle.ConstantTimeCompare([]byte(encoded), []byte(challenge)) == 1
 }
+
+// validRedirect implements the redirect-URI shapes RFC 8252 (OAuth 2.0 for
+// Native Apps) defines, which is the profile MCP desktop clients follow.
+//
+// The Host check applies only to http/https: a private-use scheme has no
+// meaningful authority component, so requiring one rejected every native
+// client. url.Parse("claude://oauth/callback") happens to yield Host
+// "oauth", but url.Parse("com.example.app:/oauth/callback") yields "" and is
+// equally legitimate.
 func validRedirect(value string) bool {
 	parsed, err := url.Parse(value)
-	if err != nil || parsed.Fragment != "" || parsed.Host == "" {
+	if err != nil || parsed.Fragment != "" || parsed.Scheme == "" {
 		return false
 	}
-	return parsed.Scheme == "https" || (parsed.Scheme == "http" && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1"))
+	switch parsed.Scheme {
+	case "https":
+		return parsed.Host != ""
+	case "http":
+		// RFC 8252 §7.3: the loopback redirect must work over both address
+		// families, because the client cannot know which one the OS will
+		// hand it. url.Parse reports "::1" from Hostname() without brackets.
+		host := parsed.Hostname()
+		return host == "localhost" || host == "127.0.0.1" || host == "::1"
+	default:
+		// RFC 8252 §7.1 private-use URI scheme: claude://oauth/callback,
+		// cursor://..., com.example.app:/... . Safe to admit broadly here
+		// because PKCE S256 is mandatory and /authorize matches the
+		// registered redirect_uri exactly; a deployment that wants to
+		// narrow which clients may register uses the connector's
+		// allowed_client_redirect_uris allowlist, enforced in register().
+		return true
+	}
 }
 func contains(values []string, want string) bool {
 	for _, value := range values {
