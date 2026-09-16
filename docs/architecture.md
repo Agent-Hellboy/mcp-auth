@@ -1,5 +1,10 @@
 # Architecture
 
+`mcp-auth` keeps protocol authorization, resource-server enforcement, and
+provider-specific behavior behind explicit boundaries. The authorization server and
+SDKs can be deployed independently; neither requires MCP tool handlers to know which
+identity provider authenticated the user.
+
 ## Components
 
 `auth-server` is an independently deployable Go OAuth authorization server. It owns authorization codes, consent, access-token signing, refresh-token rotation, client registration, and authorization-server metadata.
@@ -8,19 +13,77 @@
 
 Provider integrations implement `IdentityProvider` or `TokenExchanger` interfaces. Provider-specific claims, SDKs, and policy remain outside the core server and SDKs.
 
+```mermaid
+flowchart TB
+    subgraph clients["MCP clients"]
+        desktop["Desktop or CLI client"]
+    end
+
+    subgraph resource["MCP resource server"]
+        tools["MCP tools"]
+        sdk["mcp-auth client SDK<br/>challenge, discovery, JWT verification"]
+        policy["Resource policy<br/>audience and scopes"]
+        sdk --> policy --> tools
+    end
+
+    subgraph auth["mcp-auth process"]
+        handlers["OAuth endpoints"]
+        provider["IdentityProvider"]
+        exchanger["TokenExchanger"]
+        store["Store"]
+        keys["KeyProvider"]
+        handlers --> provider
+        handlers --> exchanger
+        handlers --> store
+        handlers --> keys
+    end
+
+    idp["OIDC or OAuth 2.0 provider"]
+    api["Downstream API"]
+
+    desktop <-->|"MCP + OAuth"| sdk
+    desktop <-->|"Authorization Code + PKCE"| handlers
+    provider <-->|"Login and identity"| idp
+    exchanger <-->|"Downstream credential"| idp
+    tools -->|"Provider token only"| api
+```
+
 ## MCP request flow
 
-1. The MCP client calls an HTTP MCP endpoint without a token.
-2. The resource server responds `401` with `WWW-Authenticate: Bearer resource_metadata="..."`.
-3. The client fetches Protected Resource Metadata and selects an authorization server.
-4. The client fetches Authorization Server Metadata.
-5. The client registers, if supported, and opens Authorization Code + PKCE with `resource` set to the canonical MCP resource URI.
-6. The authorization server validates the redirect URI, PKCE challenge, consent, and scope. It can include the RFC 9207 `iss` response parameter for newer MCP clients while remaining compatible with clients that ignore unknown authorization response parameters.
-7. The client redeems the code. The server returns a short-lived JWT access token and a rotating refresh token.
-8. The client sends the access token in the `Authorization` header on every MCP request.
-9. The resource server validates signature, issuer, audience/resource, expiry, and scope using JWKS.
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as MCP client
+    participant RS as MCP resource server
+    participant AS as mcp-auth
+    participant IdP as Upstream IdP
 
-Authorization is optional in MCP. A resource server may require it based on the sensitivity of the data or actions it exposes.
+    Client->>RS: MCP request without token
+    RS-->>Client: 401 + WWW-Authenticate resource_metadata
+    Client->>RS: GET protected-resource metadata
+    RS-->>Client: authorization_servers + resource
+    Client->>AS: GET authorization-server metadata
+    AS-->>Client: authorize, token, register, JWKS endpoints
+    opt Dynamic client registration enabled
+        Client->>AS: POST /register
+        AS-->>Client: client_id
+    end
+    Client->>AS: GET /authorize + resource + PKCE challenge
+    AS->>IdP: Redirect user to upstream authorization
+    IdP-->>AS: Authorization callback
+    AS-->>Client: Authorization code + optional RFC 9207 iss
+    Client->>AS: POST /token + code verifier
+    AS-->>Client: Short-lived MCP JWT + rotating refresh token
+    Client->>RS: MCP request + Bearer MCP JWT
+    RS->>AS: Fetch or refresh JWKS
+    AS-->>RS: Public signing keys
+    RS-->>Client: Authorized MCP response
+```
+
+The resource server validates the token's signature, issuer, audience/resource,
+expiry, subject, and required scopes before dispatching an MCP tool. Authorization
+is optional in MCP itself; each resource server decides whether its data or actions
+require it.
 
 Compatibility follows the shared authorization flow in the [2025-06-18 MCP authorization specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization) and the [2026-07-28 specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization). Newer issuer-response validation is additive, so deployments can support clients from either version.
 
@@ -36,6 +99,26 @@ There are three different credentials:
 
 The resource server must never forward the MCP client token to an API with a different audience. Use RFC 8693 token exchange or another provider adapter to mint a separate downstream token.
 
+```mermaid
+flowchart LR
+    mcpToken["MCP access token<br/>aud = MCP resource"]
+    serviceCredential["Resource-server credential<br/>private_key_jwt"]
+    downstreamToken["Downstream token<br/>aud = downstream API"]
+
+    client["MCP client"] -->|"Bearer"| mcpToken
+    mcpToken -->|"validated by"| resource["MCP resource server"]
+    resource -->|"authenticates exchange with"| serviceCredential
+    serviceCredential --> exchange["mcp-auth / token exchange"]
+    mcpToken -.->|"subject_token; never sent to API"| exchange
+    exchange --> downstreamToken
+    downstreamToken -->|"Bearer"| api["Downstream API"]
+
+    mcpToken ~~~ warning["The MCP token and downstream token<br/>are not interchangeable"]
+```
+
+`private_key_jwt` proves which resource server is requesting exchange. It does not
+identify the end user; the validated MCP token remains the subject credential.
+
 ## Extensibility
 
 - `Store` allows durable persistence without changing handlers. OAuth state belongs in a shared managed store for multi-instance deployments.
@@ -44,3 +127,44 @@ The resource server must never forward the MCP client token to an API with a dif
 - `TokenExchanger` allows RFC 8693 or provider-specific downstream exchange.
 - SDK discovery objects accept third-party authorization-server metadata.
 - FastMCP is optional in the Python package; non-FastMCP servers can use the verifier and challenge helpers directly.
+
+## Deployment topology
+
+One `auth-server` process has one issuer, one selected connector, and one canonical
+resource audience. Deploy multiple processes when protecting multiple resources.
+That keeps client registrations, consent state, signing keys, and upstream sessions
+from accidentally crossing resource boundaries.
+
+```mermaid
+flowchart TB
+    proxy["HTTPS reverse proxy"]
+
+    subgraph one["Resource A boundary"]
+        authA["auth-server A<br/>issuer A + connector A"]
+        storeA[("Store A")]
+        keysA["Key provider A"]
+        resourceA["MCP resource A"]
+        authA --> storeA
+        authA --> keysA
+        resourceA -.->|"JWKS + token exchange"| authA
+    end
+
+    subgraph two["Resource B boundary"]
+        authB["auth-server B<br/>issuer B + connector B"]
+        storeB[("Store B")]
+        keysB["Key provider B"]
+        resourceB["MCP resource B"]
+        authB --> storeB
+        authB --> keysB
+        resourceB -.->|"JWKS + token exchange"| authB
+    end
+
+    proxy --> authA
+    proxy --> resourceA
+    proxy --> authB
+    proxy --> resourceB
+```
+
+For exact runtime settings and operational constraints, see
+[Authorization server](auth-server.md). For SDK integration, see
+[Auth client SDKs](auth-client.md).

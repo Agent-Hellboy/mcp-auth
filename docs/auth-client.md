@@ -2,6 +2,33 @@
 
 Both SDKs are installable without the authorization server. They work with the bundled server or a third-party OAuth authorization server that publishes compatible metadata.
 
+The SDK is the authorization boundary inside a resource server. MCP tool handlers
+receive a verified subject and scopes; they do not parse bearer tokens, fetch JWKS,
+or know which identity provider authenticated the caller.
+
+```mermaid
+flowchart LR
+    client["MCP client"]
+
+    subgraph server["MCP resource server"]
+        challenge["401 challenge + metadata"]
+        verifier["JWTVerifier"]
+        policy["Audience + scope policy"]
+        tools["MCP tool handlers"]
+
+        challenge --> verifier --> policy --> tools
+    end
+
+    auth["Compatible authorization server<br/>metadata, JWKS, token endpoint"]
+    downstream["Downstream API"]
+
+    client -->|"Request without token"| challenge
+    challenge -.->|"WWW-Authenticate"| client
+    client -->|"Bearer MCP token"| verifier
+    verifier -.->|"Bounded JWKS refresh"| auth
+    tools -->|"Separate downstream token"| downstream
+```
+
 The Python package is currently Git-installable (a VCS pin is appropriate until
 the package is published to an index):
 
@@ -59,6 +86,28 @@ docker compose -f deploy/docker-compose.e2e.yml down --volumes --remove-orphans
 ## Token exchange
 
 `TokenExchangeClient` sends RFC 8693 parameters and returns a token tagged with the requested downstream audience. Cache keys are bounded and include subject-token identity, audience, and scope. The returned token is a new downstream credential; do not substitute the inbound MCP client token. Keep these boundaries explicit: the MCP client token authenticates the caller to the resource server, the resource server's service credential authenticates its exchange request, and the downstream API token authenticates the provider call.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client as MCP client
+    participant RS as Resource server + SDK
+    participant AS as Authorization server
+    participant API as Downstream API
+
+    Client->>RS: MCP request + MCP access token
+    RS->>RS: Verify signature, iss, aud, exp, sub, scopes
+    RS->>AS: RFC 8693 token exchange<br/>subject_token + private_key_jwt
+    AS->>AS: Validate MCP token and resource-server assertion
+    AS-->>RS: Downstream access token
+    RS->>API: Request + downstream access token
+    API-->>RS: Provider response
+    RS-->>Client: MCP result
+```
+
+The SDK cache is keyed by subject-token identity, requested audience, and scope.
+It never turns an MCP token into a generic bearer credential, and it never sends
+the resource server's private key to the authorization server.
 
 ## Private-key JWT
 

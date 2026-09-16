@@ -1,5 +1,38 @@
 # Authorization server
 
+The Go authorization server presents standard OAuth endpoints to MCP clients and
+adapts a selected upstream OIDC or OAuth 2.0 provider at runtime. One process is
+bound to one connector and one MCP resource audience.
+
+```mermaid
+flowchart LR
+    client["MCP client"]
+
+    subgraph server["auth-server process"]
+        endpoints["OAuth endpoints<br/>register, authorize, token, revoke"]
+        connector["Selected connector"]
+        identity["IdentityProvider"]
+        exchange["TokenExchanger"]
+        store[("Store")]
+        keys["KeyProvider"]
+
+        endpoints --> connector
+        connector --> identity
+        connector --> exchange
+        endpoints --> store
+        endpoints --> keys
+    end
+
+    idp["Upstream OIDC / OAuth 2.0 provider"]
+    resource["MCP resource server"]
+
+    client <-->|"Authorization Code + PKCE"| endpoints
+    identity <-->|"Login, ID token, or userinfo"| idp
+    exchange <-->|"Access / refresh token"| idp
+    endpoints -->|"MCP JWT"| client
+    resource -.->|"JWKS and authenticated exchange"| endpoints
+```
+
 ## Run and configure
 
 ```bash
@@ -92,6 +125,36 @@ environment variable, never a literal secret. `client_id` can likewise be
 supplied indirectly as `client_id_env`; set exactly one of the two. All
 provider-specific behavior is behind `IdentityProvider` and `TokenExchanger`
 interfaces.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant Client as MCP client
+    participant AS as auth-server
+    participant IdP as Upstream provider
+    participant Store
+
+    Client->>AS: /authorize + PKCE challenge + resource
+    AS->>Store: Persist one-time consent state and nonce
+    AS-->>User: Consent page
+    User->>AS: Approve
+    AS-->>User: Redirect to upstream provider
+    User->>IdP: Authenticate
+    IdP-->>AS: /identity/callback + authorization code
+    AS->>IdP: Redeem upstream code
+    alt Connector requests openid
+        AS->>AS: Verify ID token signature, claims, and nonce
+    else Plain OAuth 2.0 connector
+        AS->>IdP: Fetch userinfo
+    end
+    AS->>Store: Persist resolved identity and upstream session
+    AS-->>User: Redirect to client callback + MCP authorization code
+    User->>Client: Follow redirect
+    Client->>AS: /token + code verifier
+    AS->>Store: Consume code and verify PKCE
+    AS-->>Client: MCP access and refresh tokens
+```
 
 A connector only needs `issuer` plus whichever of `authorization_endpoint`,
 `token_endpoint`, `jwks_uri`, and `userinfo_endpoint` it doesn't want to
@@ -250,6 +313,34 @@ same care as the signing key: it belongs in a store with encryption at rest
 and restricted access, not an unencrypted Docker volume, and a leak of it is
 equivalent to a leak of every affected user's downstream credential.
 
+```mermaid
+flowchart TB
+    handlers["OAuth handlers"]
+    store["Store interface"]
+    memory[("MemoryStore<br/>tests and local development")]
+    sqlite[("SQLiteStore<br/>single-node durable deployment")]
+    managed[("Shared encrypted store<br/>multi-replica production")]
+    keys["KeyProvider interface"]
+    localKeys["Local PEM / ephemeral key<br/>development"]
+    managedKeys["KMS, HSM, or secret manager<br/>production"]
+
+    handlers --> store
+    store --> memory
+    store --> sqlite
+    store -.->|"custom adapter"| managed
+    handlers --> keys
+    keys --> localKeys
+    keys -.->|"custom adapter"| managedKeys
+```
+
+The store contains different classes of data:
+
+- One-time authorization codes, consent state, and OAuth state.
+- Hashed refresh tokens, with rotation and reuse detection.
+- Dynamic client registrations.
+- **Usable upstream access and refresh tokens** when
+  `downstream_token_strategy=upstream_session`; protect these as credentials.
+
 The local token exchanger exists only to make the development Compose flow
 self-contained. Production must inject a provider-backed `TokenExchanger` that
 validates the subject token and obtains a credential for the downstream audience.
@@ -275,6 +366,20 @@ To front more than one resource server or upstream provider, run one
 proxy that routes by hostname or path. Nothing in the current design prevents
 this; it's an ordinary multi-instance deployment; only the routing in front
 of it changes. For example, with Caddy routing by hostname:
+
+```mermaid
+flowchart LR
+    proxy["Shared HTTPS reverse proxy"]
+    authA["auth-server :8081<br/>connector=databricks<br/>resource=/databricks/mcp"]
+    authB["auth-server :8082<br/>connector=internal-api<br/>resource=/internal-api/mcp"]
+    dbA[("State and keys A")]
+    dbB[("State and keys B")]
+
+    proxy -->|"databricks-auth.example.com"| authA
+    proxy -->|"internal-api-auth.example.com"| authB
+    authA --> dbA
+    authB --> dbB
+```
 
 ```caddyfile
 databricks-auth.example.com {

@@ -8,6 +8,26 @@ git submodule update --init --recursive
 
 The core repository remains installable and testable when the submodule is absent. The companion provider-neutral fixture is in `examples/databricks-mcp-integration/`.
 
+```mermaid
+flowchart LR
+    client["MCP client"]
+    proxy["HTTPS reverse proxy"]
+    resource["Databricks MCP resource server<br/>mcp-auth Python SDK"]
+    auth["mcp-auth<br/>Databricks connector"]
+    workspace["Databricks workspace<br/>OIDC + SQL APIs"]
+
+    client -->|"MCP request"| proxy
+    proxy --> resource
+    client <-->|"Browser OAuth + PKCE"| auth
+    auth <-->|"User login and upstream session"| workspace
+    resource -.->|"JWKS + authenticated token exchange"| auth
+    resource -->|"Per-user downstream token"| workspace
+```
+
+The example demonstrates integration boundaries, not a second OAuth
+implementation. The resource server imports the SDK; all browser login, consent,
+connector secrets, and upstream token state remain in `mcp-auth`.
+
 ## Generic configuration
 
 The example's `.env.example` uses:

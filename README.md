@@ -2,10 +2,49 @@
 
 `mcp-auth` is a provider-neutral OAuth platform for HTTP-based Model Context Protocol (MCP) resource servers.
 
-Provider-neutral means both halves of that: an OIDC provider (a connector requesting the `openid` scope, whose
-ID token is verified) and a plain OAuth 2.0 one (no `openid`, identity read from `userinfo_endpoint`) are both
-usable, signing with RS256, PS256, or ES256, with endpoints either configured directly or discovered from the
-issuer. See [OIDC or plain OAuth 2.0](docs/auth-server.md#oidc-or-plain-oauth-20).
+It separates three concerns that are often coupled:
+
+- **MCP clients** complete standard Authorization Code + PKCE.
+- **MCP resource servers** validate narrowly scoped access tokens with a reusable Python or Go SDK.
+- **Identity providers and downstream APIs** stay behind runtime-configured connectors.
+
+An OIDC provider (a connector requesting `openid`, with a verified ID token) and a
+plain OAuth 2.0 provider (no `openid`, identity from `userinfo_endpoint`) are both
+supported. Endpoints may be configured directly or discovered from the issuer, and
+ID tokens may use RS256, PS256, or ES256. See
+[OIDC or plain OAuth 2.0](docs/auth-server.md#oidc-or-plain-oauth-20).
+
+## How it fits together
+
+```mermaid
+flowchart LR
+    client["MCP client<br/>Cursor, Claude, or another client"]
+    resource["MCP resource server<br/>Python or Go SDK"]
+    auth["mcp-auth<br/>authorization server"]
+    idp["Upstream identity provider<br/>OIDC or OAuth 2.0"]
+    api["Downstream API"]
+
+    client -->|"1. MCP request"| resource
+    resource -.->|"2. 401 + protected-resource metadata"| client
+    client -->|"3. Authorization Code + PKCE"| auth
+    auth <-->|"4. User login and consent"| idp
+    auth -->|"5. MCP access token"| client
+    client -->|"6. Bearer token"| resource
+    resource -.->|"7. Verify with JWKS"| auth
+    resource -->|"8. Separate downstream token"| api
+```
+
+The token sent by the MCP client is valid only for the MCP resource server. It is
+never forwarded to the downstream API. The resource server obtains a separate
+downstream credential through token exchange or the connector's upstream session.
+
+## Choose your starting point
+
+- **Deploy the authorization server:** [Authorization server](docs/auth-server.md)
+- **Protect an MCP resource server:** [Auth client SDKs](docs/auth-client.md)
+- **Understand the complete protocol flow:** [Architecture](docs/architecture.md)
+- **Run an end-to-end example:** [Optional Databricks example](docs/databricks-example.md)
+- **Contribute or run tests:** [Local development](docs/development.md)
 
 The repository contains:
 
@@ -15,11 +54,18 @@ The repository contains:
 - `examples/databricks-mcp/`: an optional Git submodule containing the provider-specific example; the core does not depend on it.
 - `examples/databricks-mcp-integration/`: provider-neutral configuration guidance used by the core tests.
 
-MCP authorization is optional at the protocol level. A particular resource server may still require authorization when it exposes private data or actions.
+MCP authorization is optional at the protocol level. A resource server may still
+require it when it exposes private data or actions.
 
 ## Architecture
 
-An MCP client discovers protected-resource metadata from the resource server, discovers the authorization server, completes OAuth Authorization Code + PKCE, and sends an access token to the MCP resource server. The resource server validates the token locally using the authorization server's JWKS. A downstream API receives a separate token obtained through an explicit connector or token exchange; the MCP client token is never forwarded as a downstream credential.
+The authorization server owns login, consent, client registration, token issuance,
+refresh rotation, and connector selection. Resource servers remain independent:
+they use the SDK to publish discovery metadata, return the correct bearer challenge,
+validate JWTs locally from JWKS, and obtain downstream credentials when needed.
+
+For sequence diagrams, credential boundaries, extension points, and deployment
+topologies, see [Architecture](docs/architecture.md).
 
 ## Packages
 
