@@ -10,7 +10,15 @@ Copy `.env.example` to a local, untracked `.env` only if useful. The server read
 
 Important settings:
 
-- `MCP_AUTH_ISSUER`: stable HTTPS issuer URL, used in metadata and `iss`.
+- `MCP_AUTH_ISSUER`: stable HTTPS issuer URL, used in metadata and `iss`. A trailing slash is stripped at
+  startup; every endpoint the server builds or advertises (`/authorize`, `/token`, `/register`, `/revoke`,
+  `/.well-known/jwks.json`, `/identity/callback`) is derived from the normalized value via one method each
+  on `Config` — never by concatenating `Issuer` at the point of use — so the advertised endpoint and the one
+  actually checked against can't independently drift the way they did before this existed.
+- `MCP_AUTH_LOG_LEVEL`: `info` (default) logs one line per request — method, path, status, duration, and
+  `client_id` where the request carries one — so a failed connection attempt can be diagnosed from the log
+  alone. Set to `silent` to disable it for a deployment that wants quieter logs. This is separate from the
+  structured OAuth event audit log, which always runs and always redacts tokens/secrets/codes/keys/assertions.
 - `MCP_AUTH_RESOURCE`: canonical resource audience placed in `aud`.
 - `MCP_AUTH_PRIVATE_KEY_FILE`: PEM RSA key path. Local mode generates an ephemeral test key.
 - `MCP_AUTH_STORE`: `memory` for tests/local development or `sqlite` for durable single-node deployments.

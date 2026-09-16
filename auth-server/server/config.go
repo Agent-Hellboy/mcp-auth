@@ -39,11 +39,25 @@ type Config struct {
 	// the selected connector's allowed_client_redirect_uris, not set directly
 	// from an environment variable.
 	AllowedClientRedirectURIs []string
+	// LogLevel gates the one-line-per-request access log (method, path,
+	// status, duration, client_id where known). "silent" disables it;
+	// anything else (the default, "info") enables it. There was previously
+	// no way to answer "did the request even arrive" without opening the
+	// store directly, which is a real obstacle for a server whose job is
+	// being integrated against by third-party clients.
+	LogLevel string
 }
 
 // Validate applies deployment safety checks that are intentionally separate
 // from NewServer so tests and embedders can supply their own transport setup.
-func (c Config) Validate() error {
+// It also normalizes Issuer (stripping any trailing slash) in place: every
+// endpoint URL this server builds or advertises is derived from Issuer via
+// the methods below, and a trailing slash surviving into that derivation is
+// what previously produced double slashes on some endpoints and a
+// mismatched token_endpoint between what was advertised and what
+// authenticateClientAssertion actually checked against.
+func (c *Config) Validate() error {
+	c.Issuer = strings.TrimRight(c.Issuer, "/")
 	if c.Issuer == "" || c.Resource == "" {
 		return errors.New("issuer and resource are required")
 	}
@@ -90,6 +104,27 @@ func isLoopbackHost(host string) bool {
 	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
+// issuerBase is Issuer with any trailing slash stripped, so every endpoint
+// method below produces a single-slash-joined URL regardless of whether
+// Validate has already normalized Issuer (it always has on the real startup
+// path; this is a second line of defense for callers, such as tests, that
+// build a Config without calling Validate). Every URL this server builds
+// from Issuer must go through one of these methods — never Issuer + "..."
+// or an ad hoc TrimRight at the point of use — so the advertised value and
+// the value actually checked against can never independently drift, which
+// is exactly how they drifted before (server.go's metadata handler
+// concatenated Issuer raw while its client-assertion check trimmed it).
+func (c Config) issuerBase() string {
+	return strings.TrimRight(c.Issuer, "/")
+}
+
+func (c Config) AuthorizationEndpoint() string { return c.issuerBase() + "/authorize" }
+func (c Config) TokenEndpoint() string         { return c.issuerBase() + "/token" }
+func (c Config) RegistrationEndpoint() string  { return c.issuerBase() + "/register" }
+func (c Config) RevocationEndpoint() string    { return c.issuerBase() + "/revoke" }
+func (c Config) JWKSURI() string               { return c.issuerBase() + "/.well-known/jwks.json" }
+func (c Config) IdentityCallbackURL() string   { return c.issuerBase() + "/identity/callback" }
+
 func ConfigFromEnv() Config {
 	return Config{
 		Issuer:                      env("MCP_AUTH_ISSUER", "http://localhost:8080"),
@@ -114,6 +149,7 @@ func ConfigFromEnv() Config {
 		StoreBackend:                env("MCP_AUTH_STORE", "memory"),
 		DatabaseURL:                 os.Getenv("MCP_AUTH_DATABASE_URL"),
 		ResourceClientsFile:         os.Getenv("MCP_AUTH_RESOURCE_CLIENTS_FILE"),
+		LogLevel:                    env("MCP_AUTH_LOG_LEVEL", "info"),
 	}
 }
 

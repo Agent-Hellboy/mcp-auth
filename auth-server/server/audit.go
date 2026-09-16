@@ -25,6 +25,21 @@ func (a *AuditLogger) Event(name, outcome string, attrs map[string]any) {
 	a.logger.Info("oauth event", "data", json.RawMessage(mustJSON(clean)))
 }
 
+// Request logs one line per inbound HTTP request: enough to answer "did the
+// request even arrive, and what did we send back" without opening the
+// store. clientID is omitted when empty (most requests, including every
+// GET, have none to report) rather than logged as "".
+func (a *AuditLogger) Request(requestID, method, path string, status int, duration time.Duration, clientID string) {
+	attrs := map[string]any{
+		"event": "http_request", "request_id": requestID, "method": method,
+		"path": path, "status": status, "duration_ms": duration.Milliseconds(),
+	}
+	if clientID != "" {
+		attrs["client_id"] = clientID
+	}
+	a.logger.Info("http request", "data", json.RawMessage(mustJSON(attrs)))
+}
+
 func isSensitive(key string) bool {
 	key = strings.ToLower(key)
 	return strings.Contains(key, "token") || strings.Contains(key, "secret") || strings.Contains(key, "key") || strings.Contains(key, "code") || strings.Contains(key, "assertion")

@@ -125,7 +125,7 @@ func buildProviders(config server.Config, store server.Store) (server.Config, se
 	}
 	config.AllowedScopes = append([]string(nil), connector.MCPScopes...)
 	config.AllowedClientRedirectURIs = append([]string(nil), connector.AllowedClientRedirectURIs...)
-	callbackURL := strings.TrimRight(config.Issuer, "/") + "/identity/callback"
+	callbackURL := config.IdentityCallbackURL()
 	identity, err := server.NewOIDCIdentityProvider(connector, callbackURL, allowInsecure)
 	if err != nil {
 		return config, nil, nil, err

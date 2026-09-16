@@ -37,6 +37,33 @@ func TestConfigSecureDefaults(t *testing.T) {
 	}
 }
 
+// TestConfigNormalizesTrailingSlashIssuer guards against a live bug found
+// during real-client testing: a trailing-slash MCP_AUTH_ISSUER made
+// authorizationMetadata's raw Issuer+"/token" concatenation and
+// authenticateClientAssertion's separately-trimmed one disagree, so a
+// client that built its assertion audience from the (correct, advertised)
+// token_endpoint had its assertion rejected by the (differently
+// constructed) expected audience. All endpoint derivation must go through
+// Config's methods so there is exactly one computation to get right.
+func TestConfigNormalizesTrailingSlashIssuer(t *testing.T) {
+	config := Config{Issuer: "https://auth.example.com/", Resource: "https://mcp.example.com", RequireHTTPS: true, PrivateKeyFile: "/keys/signing.pem", StoreBackend: "sqlite", DatabaseURL: "/data/auth.db"}
+	if err := config.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if config.Issuer != "https://auth.example.com" {
+		t.Fatalf("expected the trailing slash to be stripped, got %q", config.Issuer)
+	}
+	if got := config.TokenEndpoint(); got != "https://auth.example.com/token" {
+		t.Fatalf("unexpected token endpoint: %q", got)
+	}
+	if got := config.AuthorizationEndpoint(); got != "https://auth.example.com/authorize" {
+		t.Fatalf("unexpected authorization endpoint: %q", got)
+	}
+	if got := config.IdentityCallbackURL(); got != "https://auth.example.com/identity/callback" {
+		t.Fatalf("unexpected identity callback URL: %q", got)
+	}
+}
+
 func TestConfigRejectsUnsafeDeployment(t *testing.T) {
 	config := Config{Issuer: "https://auth.example.com", Resource: "https://mcp.example.com", LocalDevelopment: true, RequireHTTPS: true}
 	if err := config.Validate(); err == nil {
@@ -242,6 +269,9 @@ func TestMetadataAndJWKS(t *testing.T) {
 		testServer(t).Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("%s: %d", path, recorder.Code)
+		}
+		if recorder.Header().Get("Cache-Control") == "" {
+			t.Fatalf("%s: expected a Cache-Control header on a static metadata document", path)
 		}
 	}
 }
@@ -456,6 +486,35 @@ func TestTokenExchangeRejectsSubjectTokenForWrongResource(t *testing.T) {
 	instance.Handler().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected a subject_token minted for a different resource to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRequestLoggingRecordsMethodPathStatus(t *testing.T) {
+	var output bytes.Buffer
+	config := Config{Issuer: "http://localhost:8080", Resource: "http://localhost:8081/mcp", AccessTokenTTL: time.Minute, AllowedScopes: []string{"tools:read"}, LocalDevelopment: true, LocalSubject: "test-user"}
+	instance, err := NewServer(config, NewMemoryStore(), LocalIdentityProvider{Subject: "test-user"}, nil, &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	logged := output.String()
+	if !strings.Contains(logged, `"method":"GET"`) || !strings.Contains(logged, `"path":"/healthz"`) || !strings.Contains(logged, `"status":200`) {
+		t.Fatalf("expected a request log line for the health check, got: %s", logged)
+	}
+}
+
+func TestRequestLoggingSilentDisablesIt(t *testing.T) {
+	var output bytes.Buffer
+	config := Config{Issuer: "http://localhost:8080", Resource: "http://localhost:8081/mcp", AccessTokenTTL: time.Minute, AllowedScopes: []string{"tools:read"}, LocalDevelopment: true, LocalSubject: "test-user", LogLevel: "silent"}
+	instance, err := NewServer(config, NewMemoryStore(), LocalIdentityProvider{Subject: "test-user"}, nil, &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if output.Len() != 0 {
+		t.Fatalf("expected MCP_AUTH_LOG_LEVEL=silent to suppress request logging, got: %s", output.String())
 	}
 }
 

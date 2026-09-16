@@ -83,17 +83,49 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /token", s.token)
 	mux.HandleFunc("POST /register", s.register)
 	mux.HandleFunc("POST /revoke", s.revoke)
-	return s.cors(s.httpsOnly(mux))
+	return s.requestLogging(s.cors(s.httpsOnly(mux)))
+}
+
+// requestLogging records one audit line per request (method, path, status,
+// duration, client_id where the request carries one) so a failed connection
+// attempt can be diagnosed from the log alone, without opening the store.
+// Disabled by MCP_AUTH_LOG_LEVEL=silent for deployments that want quieter logs.
+func (s *Server) requestLogging(next http.Handler) http.Handler {
+	if strings.EqualFold(s.Config.LogLevel, "silent") {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		requestID := randomID()
+		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(recorder, r)
+		s.Audit.Request(requestID, r.Method, r.URL.Path, recorder.status, time.Since(start), r.FormValue("client_id"))
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
 }
 
 func (s *Server) authorizationMetadata(w http.ResponseWriter, _ *http.Request) {
+	// This document changes only on redeploy, never per request; a client
+	// that never sends a conditional request (most don't) would otherwise
+	// refetch it on every connection attempt, which is indistinguishable in
+	// the logs from a client retrying because something is actually failing.
+	w.Header().Set("Cache-Control", "max-age=3600")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issuer":                                         s.Config.Issuer,
-		"authorization_endpoint":                         s.Config.Issuer + "/authorize",
-		"token_endpoint":                                 s.Config.Issuer + "/token",
-		"registration_endpoint":                          s.Config.Issuer + "/register",
-		"revocation_endpoint":                            s.Config.Issuer + "/revoke",
-		"jwks_uri":                                       s.Config.Issuer + "/.well-known/jwks.json",
+		"authorization_endpoint":                         s.Config.AuthorizationEndpoint(),
+		"token_endpoint":                                 s.Config.TokenEndpoint(),
+		"registration_endpoint":                          s.Config.RegistrationEndpoint(),
+		"revocation_endpoint":                            s.Config.RevocationEndpoint(),
+		"jwks_uri":                                       s.Config.JWKSURI(),
 		"response_types_supported":                       []string{"code"},
 		"grant_types_supported":                          []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange"},
 		"code_challenge_methods_supported":               []string{"S256"},
@@ -104,6 +136,7 @@ func (s *Server) authorizationMetadata(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) protectedResourceMetadata(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Cache-Control", "max-age=3600")
 	writeJSON(w, http.StatusOK, map[string]any{"resource": s.Config.Resource, "authorization_servers": []string{s.Config.Issuer}, "scopes_supported": s.Config.AllowedScopes})
 }
 
@@ -113,6 +146,7 @@ func (s *Server) jwks(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusInternalServerError, "server_error")
 		return
 	}
+	w.Header().Set("Cache-Control", "max-age=3600")
 	writeJSON(w, http.StatusOK, keys)
 }
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -208,7 +242,7 @@ func (s *Server) identityCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	identity, err := interactive.Complete(r.Context(), IdentityCallback{
-		Code: r.URL.Query().Get("code"), RedirectURI: strings.TrimRight(s.Config.Issuer, "/") + "/identity/callback", Nonce: pending.Nonce, State: state,
+		Code: r.URL.Query().Get("code"), RedirectURI: s.Config.IdentityCallbackURL(), Nonce: pending.Nonce, State: state,
 		CodeVerifier: pending.CodeVerifier,
 	})
 	if err != nil {
@@ -477,7 +511,7 @@ func (s *Server) authenticateClientAssertion(r *http.Request) (Client, error) {
 	if client.TokenEndpointAuth != "private_key_jwt" || client.PublicKeyPEM == "" {
 		return Client{}, errors.New("client is not registered for private_key_jwt")
 	}
-	tokenEndpoint := strings.TrimRight(s.Config.Issuer, "/") + "/token"
+	tokenEndpoint := s.Config.TokenEndpoint()
 	algorithm := client.Algorithm
 	if algorithm == "" {
 		algorithm = "RS256"
