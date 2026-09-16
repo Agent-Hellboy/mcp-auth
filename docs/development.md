@@ -41,6 +41,13 @@ demo resource server, Go vulnerability analysis, Python dependency auditing, a
 Trivy HIGH/CRITICAL scan of the authorization-server image, and the
 public-repository secret/artifact audit.
 
+A published GitHub Release runs `.github/workflows/docker-release.yml`, which
+builds a multi-arch `auth-server` image and pushes
+`princekrroshan01/mcp-auth-server:<version>` (and `latest` when the release is
+not a prerelease). The workflow logs in with repository secrets
+`DOCKER_USERNAME` and `DOCKER_PASSWORD` (a Docker Hub access token, not an
+account password).
+
 The compatibility checks cover the shared authorization flow used by the
 2025-06-18 and 2026-07-28 MCP authorization specifications. The server emits
 the newer authorization-response `iss` parameter by default; setting

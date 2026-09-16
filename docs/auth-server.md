@@ -39,6 +39,13 @@ flowchart LR
 go run ./auth-server/cmd/auth-server
 ```
 
+Release tags are also published to Docker Hub as
+`princekrroshan01/mcp-auth-server:<tag>`:
+
+```bash
+docker pull princekrroshan01/mcp-auth-server:latest
+```
+
 Copy `.env.example` to a local, untracked `.env` only if useful. The server reads `MCP_AUTH_*` variables; production should inject them through the deployment environment or a secret manager.
 
 Important settings:

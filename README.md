@@ -93,6 +93,10 @@ The authorization server selects a provider-neutral connector at runtime with
 `MCP_AUTH_CONNECTORS_FILE` and `MCP_AUTH_CONNECTOR`; the connector contains
 endpoints and environment-variable names for secrets, never secret values.
 
+Publishing a GitHub Release (`vX.Y.Z`) builds `auth-server` and pushes
+`princekrroshan01/mcp-auth-server` to Docker Hub with that version tag, and
+`latest` for non-prerelease versions.
+
 ## Security model
 
 - Authorization Code + PKCE (`S256`) is required for public clients.
