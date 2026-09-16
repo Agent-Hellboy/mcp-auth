@@ -2,9 +2,11 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -14,10 +16,14 @@ import (
 // Secrets are referenced by environment variable name and are never stored in
 // this structure as literal configuration values.
 type ConnectorConfig struct {
-	Issuer                  string   `json:"issuer"`
-	AuthorizationEndpoint   string   `json:"authorization_endpoint"`
-	TokenEndpoint           string   `json:"token_endpoint"`
-	JWKSURI                 string   `json:"jwks_uri"`
+	Issuer                string `json:"issuer"`
+	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	TokenEndpoint         string `json:"token_endpoint"`
+	JWKSURI               string `json:"jwks_uri"`
+	// UserinfoEndpoint is optional. When set (directly or via discovery),
+	// it's used to supplement ID token claims for the identity_claims
+	// fallback list when none of them are present in the ID token itself.
+	UserinfoEndpoint        string   `json:"userinfo_endpoint"`
 	ClientID                string   `json:"client_id"`
 	ClientIDEnv             string   `json:"client_id_env"`
 	ClientSecretEnv         string   `json:"client_secret_env"`
@@ -52,6 +58,13 @@ type ConnectorConfig struct {
 	// ["RS256"] when unset, matching every connector configured before this
 	// field existed.
 	AllowedAlgorithms []string `json:"allowed_algorithms"`
+	// IdentityClaims is the ordered list of ID token claims to use as the
+	// local Identity.Subject, trying each in turn. Defaults to ["sub"] when
+	// unset. If none of them are present in the ID token and UserinfoEndpoint
+	// is known, the userinfo endpoint is called (with the upstream access
+	// token) to supplement the claims before resolving again — some
+	// providers only expose email/group claims there, not in the ID token.
+	IdentityClaims []string `json:"identity_claims"`
 }
 
 const (
@@ -73,6 +86,13 @@ func (c ConnectorConfig) validate(name string, allowInsecure bool) error {
 		validScheme := parsed.Scheme == "https" || (allowInsecure && parsed.Scheme == "http")
 		if err != nil || !validScheme || parsed.Host == "" {
 			return fmt.Errorf("connector %q has non-HTTPS %s", name, field)
+		}
+	}
+	if c.UserinfoEndpoint != "" {
+		parsed, err := url.Parse(c.UserinfoEndpoint)
+		validScheme := parsed.Scheme == "https" || (allowInsecure && parsed.Scheme == "http")
+		if err != nil || !validScheme || parsed.Host == "" {
+			return fmt.Errorf("connector %q has an invalid userinfo_endpoint", name)
 		}
 	}
 	if c.ClientID == "" && c.ClientIDEnv == "" {
@@ -104,6 +124,11 @@ func (c ConnectorConfig) validate(name string, allowInsecure bool) error {
 			return fmt.Errorf("connector %q has an unsupported allowed_algorithms entry %q", name, algorithm)
 		}
 	}
+	for _, claim := range c.IdentityClaims {
+		if claim == "" {
+			return fmt.Errorf("connector %q has an empty identity_claims entry", name)
+		}
+	}
 	for _, redirectURI := range c.AllowedUpstreamCallbackURIs {
 		if err := validAbsoluteURI(redirectURI); err != nil {
 			return fmt.Errorf("connector %q has an invalid allowed upstream callback URI: %w", name, err)
@@ -124,6 +149,15 @@ func (c ConnectorConfig) resolvedAllowedAlgorithms() []string {
 		return []string{"RS256"}
 	}
 	return c.AllowedAlgorithms
+}
+
+// resolvedIdentityClaims returns the configured identity-claim fallback
+// list, defaulting to ["sub"] when unset.
+func (c ConnectorConfig) resolvedIdentityClaims() []string {
+	if len(c.IdentityClaims) == 0 {
+		return []string{"sub"}
+	}
+	return c.IdentityClaims
 }
 
 func validAbsoluteURI(value string) error {
@@ -191,6 +225,29 @@ func LoadConnectorsWithOptions(path string, allowInsecure bool) (map[string]Conn
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&connector); err != nil {
 			return nil, fmt.Errorf("parse connector %q: %w", name, err)
+		}
+		// Discovery only runs when at least one required endpoint is missing,
+		// never just because userinfo_endpoint (always optional) is unset —
+		// a connector that already specifies everything it needs must never
+		// make a network call it didn't have to make before this existed.
+		if connector.Issuer != "" && (connector.AuthorizationEndpoint == "" || connector.TokenEndpoint == "" || connector.JWKSURI == "") {
+			discoveryClient := &http.Client{Timeout: discoveryTimeout}
+			discovered, err := discoverOIDCConfiguration(context.Background(), discoveryClient, connector.Issuer)
+			if err != nil {
+				return nil, fmt.Errorf("connector %q: discover OIDC configuration: %w", name, err)
+			}
+			if connector.AuthorizationEndpoint == "" {
+				connector.AuthorizationEndpoint = discovered.AuthorizationEndpoint
+			}
+			if connector.TokenEndpoint == "" {
+				connector.TokenEndpoint = discovered.TokenEndpoint
+			}
+			if connector.JWKSURI == "" {
+				connector.JWKSURI = discovered.JWKSURI
+			}
+			if connector.UserinfoEndpoint == "" {
+				connector.UserinfoEndpoint = discovered.UserinfoEndpoint
+			}
 		}
 		if err := connector.validate(name, allowInsecure); err != nil {
 			return nil, err

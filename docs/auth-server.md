@@ -68,6 +68,27 @@ supplied indirectly as `client_id_env`; set exactly one of the two. All
 provider-specific behavior is behind `IdentityProvider` and `TokenExchanger`
 interfaces.
 
+A connector only needs `issuer` plus whichever of `authorization_endpoint`,
+`token_endpoint`, `jwks_uri`, and `userinfo_endpoint` it doesn't want to
+specify by hand: at load time, if any of the first three is missing, the
+server fetches `{issuer}/.well-known/openid-configuration` (OpenID Connect
+Discovery 1.0) once and fills in whichever fields the connector left blank.
+A connector that already specifies all three never triggers this — it's
+purely additive, so every connector written before discovery existed keeps
+working unchanged. A load-time failure to reach the discovery document is a
+startup error, not a silent fallback.
+
+`identity_claims` is the ordered list of ID token claims tried, in order, as
+the local identity (`Identity.Subject`): defaults to `["sub"]`. Not every
+provider puts a usable identity in the ID token itself — some only expose
+`email` or group membership via the userinfo endpoint, and `sub` is often an
+opaque per-provider identifier a resource server has no other use for. If
+none of `identity_claims` are present in the ID token and `userinfo_endpoint`
+is known (explicit or discovered), it's called once with the upstream access
+token — never the MCP client's own token — and its claims are merged in
+before trying again; ID token claims always win over userinfo's on overlap,
+since userinfo responses aren't signed the way ID tokens are.
+
 `allowed_algorithms` lists which JWS algorithms this connector's ID tokens
 may be signed with: any of `RS256`, `PS256`, `ES256`. Defaults to `["RS256"]`
 when unset, matching every connector configured before this field existed —

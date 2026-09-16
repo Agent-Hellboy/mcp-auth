@@ -149,15 +149,12 @@ func (p *OIDCIdentityProvider) Complete(ctx context.Context, callback IdentityCa
 	if err != nil {
 		return Identity{}, err
 	}
-	subject, ok := claims["sub"].(string)
-	if !ok || subject == "" {
-		return Identity{}, errors.New("OIDC ID token has no subject")
-	}
-	identity := Identity{Subject: subject, Claims: claims}
 	// The upstream access token is this user's real, already-scoped
 	// downstream credential (e.g. for Databricks' own APIs). Capturing it
 	// here is what lets the "upstream_session" downstream-token strategy
-	// avoid depending on the upstream provider supporting RFC 8693.
+	// avoid depending on the upstream provider supporting RFC 8693, and lets
+	// resolveIdentityClaim call a userinfo endpoint below if it needs to.
+	var upstreamSession *UpstreamSession
 	if tokenResponse.AccessToken != "" {
 		tokenType := tokenResponse.TokenType
 		if tokenType == "" {
@@ -167,7 +164,7 @@ func (p *OIDCIdentityProvider) Complete(ctx context.Context, callback IdentityCa
 		if ttl <= 0 {
 			ttl = 5 * time.Minute
 		}
-		identity.UpstreamSession = &UpstreamSession{
+		upstreamSession = &UpstreamSession{
 			AccessToken:  tokenResponse.AccessToken,
 			RefreshToken: tokenResponse.RefreshToken,
 			TokenType:    tokenType,
@@ -175,7 +172,72 @@ func (p *OIDCIdentityProvider) Complete(ctx context.Context, callback IdentityCa
 			Scope:        strings.Fields(tokenResponse.Scope),
 		}
 	}
-	return identity, nil
+	subject, claims, err := p.resolveIdentityClaim(ctx, claims, upstreamSession)
+	if err != nil {
+		return Identity{}, err
+	}
+	return Identity{Subject: subject, Claims: claims, UpstreamSession: upstreamSession}, nil
+}
+
+// resolveIdentityClaim picks Identity.Subject from the first present, non-
+// empty claim in the connector's configured identity_claims fallback list
+// (["sub"] by default). If none are present and the connector has a known
+// userinfo_endpoint, it's called once — using the upstream access token,
+// never the MCP client's own token — and its claims are merged in before
+// trying again. ID token claims are authoritative and are never overwritten
+// by userinfo, since userinfo responses aren't signed the way ID tokens are.
+func (p *OIDCIdentityProvider) resolveIdentityClaim(ctx context.Context, claims map[string]any, session *UpstreamSession) (string, map[string]any, error) {
+	if subject, ok := firstStringClaim(claims, p.Connector.resolvedIdentityClaims()); ok {
+		return subject, claims, nil
+	}
+	if p.Connector.UserinfoEndpoint == "" || session == nil || session.AccessToken == "" {
+		return "", nil, errors.New("OIDC ID token has no usable identity claim")
+	}
+	userinfo, err := fetchUserinfo(ctx, p.Client, p.Connector.UserinfoEndpoint, session.AccessToken)
+	if err != nil {
+		return "", nil, fmt.Errorf("OIDC ID token has no usable identity claim and userinfo lookup failed: %w", err)
+	}
+	merged := make(map[string]any, len(claims)+len(userinfo))
+	for key, value := range userinfo {
+		merged[key] = value
+	}
+	for key, value := range claims {
+		merged[key] = value
+	}
+	if subject, ok := firstStringClaim(merged, p.Connector.resolvedIdentityClaims()); ok {
+		return subject, merged, nil
+	}
+	return "", nil, errors.New("OIDC ID token and userinfo response have no usable identity claim")
+}
+
+func firstStringClaim(claims map[string]any, names []string) (string, bool) {
+	for _, name := range names {
+		if value, ok := claims[name].(string); ok && value != "" {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func fetchUserinfo(ctx context.Context, client *http.Client, endpoint, accessToken string) (map[string]any, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create userinfo request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("fetch userinfo: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("userinfo endpoint returned HTTP %d", response.StatusCode)
+	}
+	var claims map[string]any
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxJWKSResponseBytes)).Decode(&claims); err != nil {
+		return nil, fmt.Errorf("decode userinfo response: %w", err)
+	}
+	return claims, nil
 }
 
 // newTokenEndpointRequest builds an application/x-www-form-urlencoded POST
