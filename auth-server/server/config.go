@@ -20,6 +20,7 @@ type Config struct {
 	RegistrationEnabled         bool
 	LocalDevelopment            bool
 	LocalSubject                string
+	LocalClientID               string
 	AuthorizationResponseIssuer bool
 	LocalTokenExchange          bool
 	RequireHTTPS                bool
@@ -39,6 +40,7 @@ func ConfigFromEnv() Config {
 		RegistrationEnabled:         boolEnv("MCP_AUTH_REGISTRATION_ENABLED", true),
 		LocalDevelopment:            boolEnv("MCP_AUTH_LOCAL_DEVELOPMENT", true),
 		LocalSubject:                env("MCP_AUTH_LOCAL_SUBJECT", "local-user"),
+		LocalClientID:               os.Getenv("MCP_AUTH_LOCAL_CLIENT_ID"),
 		AuthorizationResponseIssuer: boolEnv("MCP_AUTH_AUTHORIZATION_RESPONSE_ISS", true),
 		LocalTokenExchange:          boolEnv("MCP_AUTH_LOCAL_TOKEN_EXCHANGE", false),
 		RequireHTTPS:                boolEnv("MCP_AUTH_REQUIRE_HTTPS", false),

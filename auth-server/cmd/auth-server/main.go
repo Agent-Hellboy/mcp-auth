@@ -15,6 +15,17 @@ func main() {
 		slog.Error("server initialization failed", "error", err)
 		os.Exit(1)
 	}
+	if config.LocalDevelopment && config.LocalClientID != "" {
+		if err := authServer.Store.SaveClient(server.Client{
+			ID:                config.LocalClientID,
+			Name:              "local resource server",
+			RedirectURIs:      []string{"http://127.0.0.1:39001/callback"},
+			TokenEndpointAuth: "none",
+		}); err != nil {
+			slog.Error("local client registration failed", "error", err)
+			os.Exit(1)
+		}
+	}
 	if config.LocalDevelopment && config.LocalTokenExchange {
 		authServer.TokenExchanger = server.LocalTokenExchanger{
 			Issuer:      config.Issuer,

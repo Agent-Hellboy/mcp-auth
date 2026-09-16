@@ -277,6 +277,7 @@ func (s *Server) issueTokens(w http.ResponseWriter, clientID, subject string, sc
 	}
 	refresh := randomID()
 	_ = s.Store.SaveRefreshToken(RefreshToken{ValueHash: HashSecret(refresh), ClientID: clientID, Subject: subject, Scope: scopes, Resource: resource, ExpiresAt: s.now().Add(s.Config.RefreshTokenTTL)})
+	s.Audit.Event("token_issued", "success", map[string]any{"client_id": clientID, "subject": subject, "resource": resource})
 	writeJSON(w, http.StatusOK, map[string]any{"access_token": access, "token_type": "Bearer", "expires_in": int(s.Config.AccessTokenTTL.Seconds()), "refresh_token": refresh, "scope": strings.Join(scopes, " ")})
 }
 
@@ -287,9 +288,11 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := s.TokenExchanger.Exchange(r.Context(), ExchangeRequest{SubjectToken: r.FormValue("subject_token"), RequestedTokenType: r.FormValue("requested_token_type"), Audience: r.FormValue("audience"), Scope: strings.Fields(r.FormValue("scope"))})
 	if err != nil {
+		s.Audit.Event("token_exchange", "failure", map[string]any{"audience": r.FormValue("audience")})
 		oauthError(w, http.StatusBadRequest, "invalid_target")
 		return
 	}
+	s.Audit.Event("token_exchange", "success", map[string]any{"audience": r.FormValue("audience")})
 	writeJSON(w, http.StatusOK, map[string]any{"access_token": response.AccessToken, "token_type": response.TokenType, "expires_in": response.ExpiresIn, "scope": response.Scope})
 }
 

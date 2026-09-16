@@ -37,6 +37,7 @@ services:
       MCP_AUTH_LISTEN_ADDR: :8080
       MCP_AUTH_ALLOWED_SCOPES: tools:read
       MCP_AUTH_LOCAL_DEVELOPMENT: "true"
+      MCP_AUTH_LOCAL_CLIENT_ID: compose-resource-server
       MCP_AUTH_LOCAL_TOKEN_EXCHANGE: "true"
       MCP_AUTH_REQUIRE_HTTPS: "false"
       MCP_AUTH_AUTHORIZATION_RESPONSE_ISS: "true"

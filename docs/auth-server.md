@@ -17,6 +17,8 @@ Important settings:
 - `MCP_AUTH_ALLOWED_SCOPES`: space-independent comma-separated scope allowlist.
 - `MCP_AUTH_TRUSTED_ORIGINS`: exact CORS origins; keep this restrictive.
 - `MCP_AUTH_REQUIRE_HTTPS`: enable outside local development.
+- `MCP_AUTH_LOCAL_CLIENT_ID`: local-development-only pre-registered client used by
+  the Compose token-exchange test; leave it empty outside local development.
 
 The Dockerfile builds a static, non-root image. Put TLS termination in a trusted reverse proxy or serve the endpoints through an HTTPS gateway.
 
@@ -40,6 +42,10 @@ The configured RSA key signs RS256 access tokens. For key rotation, deploy a key
 ## Persistence
 
 `MemoryStore` is for local development and tests. A production `Store` must persist clients, consent requests, authorization codes, and refresh-token hashes transactionally in a managed database or another shared durable store. Authorization codes and consent state are one-time and short-lived. Refresh tokens are opaque, hashed, rotated on use, and revoked when reuse is detected.
+
+The local token exchanger exists only to make the development Compose flow
+self-contained. Production must inject a provider-backed `TokenExchanger` that
+validates the subject token and obtains a credential for the downstream audience.
 
 Do not use a Docker volume as the authoritative credential/state store for a multi-instance deployment. Volumes are node-local and create failover, backup, encryption, and access-control problems. A volume is acceptable only as a tightly controlled single-node development or explicitly managed single-node deployment choice. The enterprise default is a shared encrypted database for OAuth state and a secret manager/KMS/HSM for signing keys and confidential client credentials. Implement `Store` and `KeyProvider` adapters for the chosen services; the HTTP handlers do not change.
 
