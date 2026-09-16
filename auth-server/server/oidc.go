@@ -142,12 +142,25 @@ func (p *OIDCIdentityProvider) Complete(ctx context.Context, callback IdentityCa
 	if err := json.NewDecoder(response.Body).Decode(&tokenResponse); err != nil {
 		return Identity{}, fmt.Errorf("decode OIDC token response: %w", err)
 	}
-	if tokenResponse.IDToken == "" {
-		return Identity{}, errors.New("OIDC token response has no id_token")
-	}
-	claims, err := p.verifyIDToken(ctx, tokenResponse.IDToken, callback.Nonce)
-	if err != nil {
-		return Identity{}, err
+	var claims map[string]any
+	switch {
+	case tokenResponse.IDToken != "":
+		claims, err = p.verifyIDToken(ctx, tokenResponse.IDToken, callback.Nonce)
+		if err != nil {
+			return Identity{}, err
+		}
+	case p.Connector.requiresIDToken():
+		return Identity{}, errors.New("token response has no id_token")
+	default:
+		// Plain OAuth 2.0 (no "openid" scope requested): there is no ID token
+		// to verify, so identity comes from the userinfo endpoint below,
+		// authenticated with the upstream access token. The authorization
+		// response is still bound to this request without one — the state is
+		// one-time and consumed from the store, and PKCE binds the code
+		// exchange — but the nonce binding an ID token would carry does not
+		// apply, which is why this is reachable only when the connector never
+		// asked for OIDC in the first place.
+		claims = map[string]any{}
 	}
 	// The upstream access token is this user's real, already-scoped
 	// downstream credential (e.g. for Databricks' own APIs). Capturing it
@@ -191,11 +204,11 @@ func (p *OIDCIdentityProvider) resolveIdentityClaim(ctx context.Context, claims 
 		return subject, claims, nil
 	}
 	if p.Connector.UserinfoEndpoint == "" || session == nil || session.AccessToken == "" {
-		return "", nil, errors.New("OIDC ID token has no usable identity claim")
+		return "", nil, errors.New("no usable identity claim, and no userinfo_endpoint to fall back to")
 	}
 	userinfo, err := fetchUserinfo(ctx, p.Client, p.Connector.UserinfoEndpoint, session.AccessToken)
 	if err != nil {
-		return "", nil, fmt.Errorf("OIDC ID token has no usable identity claim and userinfo lookup failed: %w", err)
+		return "", nil, fmt.Errorf("no usable identity claim and userinfo lookup failed: %w", err)
 	}
 	merged := make(map[string]any, len(claims)+len(userinfo))
 	for key, value := range userinfo {
@@ -207,7 +220,7 @@ func (p *OIDCIdentityProvider) resolveIdentityClaim(ctx context.Context, claims 
 	if subject, ok := firstStringClaim(merged, p.Connector.resolvedIdentityClaims()); ok {
 		return subject, merged, nil
 	}
-	return "", nil, errors.New("OIDC ID token and userinfo response have no usable identity claim")
+	return "", nil, errors.New("neither the token claims nor the userinfo response carry a usable identity claim")
 }
 
 func firstStringClaim(claims map[string]any, names []string) (string, bool) {

@@ -151,6 +151,24 @@ func (c ConnectorConfig) resolvedAllowedAlgorithms() []string {
 	return c.AllowedAlgorithms
 }
 
+// requiresIDToken reports whether this connector's own authorization request
+// makes an ID token mandatory.
+//
+// Requesting the "openid" scope is what makes a flow OIDC rather than plain
+// OAuth 2.0, and OIDC Core requires the provider to return an id_token in
+// that case — so a missing one is a real error (a provider fault, or someone
+// dropping "openid" from the scopes), not a cue to quietly accept less
+// verification. A connector that never asks for "openid" is a plain OAuth 2.0
+// connector, GitHub-style: there is no ID token to miss, and identity comes
+// from userinfo_endpoint instead. Begin() defaults to "openid" when no scopes
+// are configured, so an empty list means OIDC here too.
+func (c ConnectorConfig) requiresIDToken() bool {
+	if len(c.Scopes) == 0 {
+		return true
+	}
+	return contains(c.Scopes, "openid")
+}
+
 // resolvedIdentityClaims returns the configured identity-claim fallback
 // list, defaulting to ["sub"] when unset.
 func (c ConnectorConfig) resolvedIdentityClaims() []string {

@@ -68,13 +68,20 @@ def build_remote_auth(
     jwks_uri: str,
     scopes_supported: list[str] | None = None,
     ssrf_safe: bool = True,
+    mcp_path: str = "/mcp",
 ) -> object:
-    """Build the optional FastMCP adapter with an explicit JWKS fetch policy."""
+    """Build the optional FastMCP adapter with an explicit JWKS fetch policy.
+
+    mcp_path is where the resource server mounts its MCP endpoint. The
+    audience tokens are validated against is the resource URL plus that path,
+    so a server that mounts somewhere other than /mcp has to pass the same
+    value here or every token it receives fails audience validation.
+    """
 
     verifier = JWTVerifier(
         jwks_uri=jwks_uri,
         issuer=issuer,
-        audience=resource_url.rstrip("/") + "/mcp",
+        audience=resource_url.rstrip("/") + "/" + mcp_path.strip("/"),
         ssrf_safe=ssrf_safe,
     )
     return RemoteAuthProvider(

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/example/mcp-auth/auth-server/server"
@@ -107,6 +108,26 @@ func buildStore(config server.Config) (server.Store, func(), error) {
 	}
 }
 
+func connectorNames(connectors map[string]server.ConnectorConfig) []string {
+	names := make([]string, 0, len(connectors))
+	for name := range connectors {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func connectorNamesExcept(connectors map[string]server.ConnectorConfig, selected string) []string {
+	names := make([]string, 0, len(connectors))
+	for name := range connectors {
+		if name != selected {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 func buildProviders(config server.Config, store server.Store) (server.Config, server.IdentityProvider, server.TokenExchanger, error) {
 	if config.ConnectorName == "" {
 		if !config.LocalDevelopment {
@@ -121,7 +142,23 @@ func buildProviders(config server.Config, store server.Store) (server.Config, se
 	}
 	connector, ok := connectors[config.ConnectorName]
 	if !ok {
-		return config, nil, nil, errors.New("configured connector was not found")
+		return config, nil, nil, fmt.Errorf(
+			"connector %q was not found in %s (file defines: %s)",
+			config.ConnectorName, config.ConnectorsFile, strings.Join(connectorNames(connectors), ", "),
+		)
+	}
+	// One process serves exactly one connector, so every other entry in the
+	// file is inert. Say so by name at startup rather than ignoring it
+	// silently, which is how someone ends up believing a second connector is
+	// live. This warns rather than refuses because a single connectors file
+	// shared across deployments — a staging entry and a production one, each
+	// selected by its own MCP_AUTH_CONNECTOR — is a supported layout.
+	if ignored := connectorNamesExcept(connectors, config.ConnectorName); len(ignored) > 0 {
+		slog.Warn(
+			"connectors defined but not served by this process; only MCP_AUTH_CONNECTOR is live",
+			"selected", config.ConnectorName,
+			"ignored", strings.Join(ignored, ","),
+		)
 	}
 	config.AllowedScopes = append([]string(nil), connector.MCPScopes...)
 	config.AllowedClientRedirectURIs = append([]string(nil), connector.AllowedClientRedirectURIs...)

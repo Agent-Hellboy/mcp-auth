@@ -26,7 +26,8 @@ Important settings:
 - `MCP_AUTH_CONNECTORS_FILE`: JSON file containing named upstream connectors.
 - `MCP_AUTH_CONNECTOR`: selected connector name. One running process serves exactly one connector and one
   `MCP_AUTH_RESOURCE`, by design — see [Serving multiple resources](#serving-multiple-resources) below for
-  more than one. Local identity/token exchange is available only when `MCP_AUTH_LOCAL_DEVELOPMENT=true`;
+  more than one. Any other connector in the file is inert, and is named in a startup warning so it can't be
+  mistaken for live. Local identity/token exchange is available only when `MCP_AUTH_LOCAL_DEVELOPMENT=true`;
   production starts only with a named connector.
 - `MCP_AUTH_REGISTRATION_ENABLED`: disable open registration unless policy permits it. Defaults to
   `false`, but Cursor and Claude both perform dynamic client registration (`POST /register`) before
@@ -103,6 +104,27 @@ since userinfo responses aren't signed the way ID tokens are.
 may be signed with: any of `RS256`, `PS256`, `ES256`. Defaults to `["RS256"]`
 when unset, matching every connector configured before this field existed —
 a provider that signs with ES256 or PS256 needs it set explicitly.
+
+### OIDC or plain OAuth 2.0
+
+Requesting the `openid` scope is what makes a connector OIDC, and that is how
+the server decides what to require:
+
+- **With `openid`** (including a connector that sets no `scopes` at all, since
+  the authorization request defaults to `openid`): the provider must return an
+  `id_token`, and it is verified — signature against the JWKS, issuer,
+  audience, expiry, `iat`/`nbf`, and the nonce binding it to this request. A
+  response with no `id_token` is an error, not a fallback: it means the
+  provider misbehaved or someone removed `openid` from the scopes, and quietly
+  accepting less verification is the wrong answer to either.
+- **Without `openid`** (a GitHub-style OAuth 2.0 provider): there is no ID
+  token, so identity comes from `userinfo_endpoint`, called once with the
+  upstream access token and resolved through `identity_claims`. Such a
+  connector must set `userinfo_endpoint` (directly or via discovery) and
+  `identity_claims` naming a claim that endpoint actually returns, or startup
+  succeeds and the first login fails. The state is still one-time and
+  store-consumed, and PKCE still binds the code exchange; only the ID token's
+  own nonce binding is absent, because there is no ID token.
 
 `downstream_token_strategy` selects how a resource server's downstream
 credential (the one it sends to the actual downstream API — Databricks, an

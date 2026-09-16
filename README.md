@@ -2,6 +2,11 @@
 
 `mcp-auth` is a provider-neutral OAuth platform for HTTP-based Model Context Protocol (MCP) resource servers.
 
+Provider-neutral means both halves of that: an OIDC provider (a connector requesting the `openid` scope, whose
+ID token is verified) and a plain OAuth 2.0 one (no `openid`, identity read from `userinfo_endpoint`) are both
+usable, signing with RS256, PS256, or ES256, with endpoints either configured directly or discovered from the
+issuer. See [OIDC or plain OAuth 2.0](docs/auth-server.md#oidc-or-plain-oauth-20).
+
 The repository contains:
 
 - `auth-server/`: a standalone Go OAuth authorization server.
