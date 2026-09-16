@@ -38,7 +38,7 @@ jobs:
       - name: Vulnerability scan
         uses: golang/govulncheck-action@v1
         with:
-          go-version-input: "1.25.13"
+          go-version-input: "1.26"
           go-package: ./...
           work-dir: ${{ matrix.path }}
           cache: false
@@ -86,7 +86,7 @@ jobs:
       - name: Build image
         run: docker build --tag mcp-auth-server:ci auth-server
       - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: mcp-auth-server:ci
           format: table
