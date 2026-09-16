@@ -110,7 +110,8 @@ func TestJWKSCacheDoesNotRefetchWithinTTL(t *testing.T) {
 	var cache jwksCache
 	for range 3 {
 		resolved, err := cache.resolve(context.Background(), server.Client(), server.URL, "kid-1")
-		if err != nil || resolved.N.Cmp(key.PublicKey.N) != 0 {
+		rsaKey, ok := resolved.(*rsa.PublicKey)
+		if err != nil || !ok || rsaKey.N.Cmp(key.PublicKey.N) != 0 {
 			t.Fatalf("resolve: %v", err)
 		}
 	}
@@ -150,7 +151,8 @@ func TestJWKSCacheRefreshesOnUnknownKid(t *testing.T) {
 
 	rotated.Store(true)
 	resolved, err := cache.resolve(context.Background(), server.Client(), server.URL, "kid-b")
-	if err != nil || resolved.N.Cmp(keyB.PublicKey.N) != 0 {
+	rsaKey, ok := resolved.(*rsa.PublicKey)
+	if err != nil || !ok || rsaKey.N.Cmp(keyB.PublicKey.N) != 0 {
 		t.Fatalf("expected an unknown kid to trigger a refresh: %v", err)
 	}
 	if got := atomic.LoadInt32(&requests); got != 2 {

@@ -47,6 +47,11 @@ type ConnectorConfig struct {
 	// it and need a token minted for a specific audience the login session
 	// itself wasn't scoped for.
 	DownstreamTokenStrategy string `json:"downstream_token_strategy"`
+	// AllowedAlgorithms lists the JWS algorithms this connector's ID tokens
+	// may be signed with: any of "RS256", "PS256", "ES256". Defaults to
+	// ["RS256"] when unset, matching every connector configured before this
+	// field existed.
+	AllowedAlgorithms []string `json:"allowed_algorithms"`
 }
 
 const (
@@ -94,6 +99,11 @@ func (c ConnectorConfig) validate(name string, allowInsecure bool) error {
 	if c.DownstreamTokenStrategy != "" && c.DownstreamTokenStrategy != DownstreamTokenStrategyUpstreamSession && c.DownstreamTokenStrategy != DownstreamTokenStrategyRFC8693 {
 		return fmt.Errorf("connector %q has unsupported downstream_token_strategy", name)
 	}
+	for _, algorithm := range c.AllowedAlgorithms {
+		if !validAlgorithm(algorithm) {
+			return fmt.Errorf("connector %q has an unsupported allowed_algorithms entry %q", name, algorithm)
+		}
+	}
 	for _, redirectURI := range c.AllowedUpstreamCallbackURIs {
 		if err := validAbsoluteURI(redirectURI); err != nil {
 			return fmt.Errorf("connector %q has an invalid allowed upstream callback URI: %w", name, err)
@@ -105,6 +115,15 @@ func (c ConnectorConfig) validate(name string, allowInsecure bool) error {
 		}
 	}
 	return nil
+}
+
+// resolvedAllowedAlgorithms returns the configured algorithm allowlist,
+// defaulting to RS256 only when unset.
+func (c ConnectorConfig) resolvedAllowedAlgorithms() []string {
+	if len(c.AllowedAlgorithms) == 0 {
+		return []string{"RS256"}
+	}
+	return c.AllowedAlgorithms
 }
 
 func validAbsoluteURI(value string) error {

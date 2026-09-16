@@ -17,9 +17,15 @@ type Client struct {
 	RedirectURIs      []string
 	TokenEndpointAuth string
 	SecretHash        string
-	// PublicKeyPEM holds an RSA public key (PKIX, PEM-encoded) for clients
-	// registered with TokenEndpointAuth "private_key_jwt". It is never secret.
+	// PublicKeyPEM holds an RSA or EC public key (PKIX, PEM-encoded) for
+	// clients registered with TokenEndpointAuth "private_key_jwt". It is
+	// never secret.
 	PublicKeyPEM string
+	// Algorithm is the JWS algorithm this client's client_assertion must be
+	// signed with: "RS256" (default), "PS256", or "ES256". The assertion's
+	// own header must match this exactly rather than any allowed value, so a
+	// client can't switch algorithms without re-registering its key.
+	Algorithm string
 }
 
 type AuthorizationCode struct {

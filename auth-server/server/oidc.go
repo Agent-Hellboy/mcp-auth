@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
@@ -287,8 +289,11 @@ func (p *OIDCIdentityProvider) verifyIDToken(ctx context.Context, token, expecte
 		Algorithm string `json:"alg"`
 		KeyID     string `json:"kid"`
 	}
-	if err := decodeJWTPart(parts[0], &header); err != nil || header.Algorithm != "RS256" || header.KeyID == "" {
+	if err := decodeJWTPart(parts[0], &header); err != nil || header.KeyID == "" {
 		return nil, errors.New("OIDC ID token algorithm or key is invalid")
+	}
+	if !contains(p.Connector.resolvedAllowedAlgorithms(), header.Algorithm) {
+		return nil, errors.New("OIDC ID token algorithm is not allowed")
 	}
 	var claims map[string]any
 	if err := decodeJWTPart(parts[1], &claims); err != nil {
@@ -299,8 +304,10 @@ func (p *OIDCIdentityProvider) verifyIDToken(ctx context.Context, token, expecte
 		return nil, err
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
-	if err != nil || rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], signature) != nil {
+	if err != nil {
+		return nil, errors.New("OIDC ID token signature is malformed")
+	}
+	if verifySignature(header.Algorithm, key, []byte(parts[0]+"."+parts[1]), signature) != nil {
 		return nil, errors.New("OIDC ID token signature is invalid")
 	}
 	if claims["iss"] != p.Connector.Issuer {
@@ -388,18 +395,19 @@ const (
 	maxJWKSResponseBytes = 1 << 20
 )
 
-// jwksCache holds one connector's fetched RSA signing keys, keyed by kid, so
-// verifying an ID token doesn't refetch the upstream JWKS on every request.
-// It refreshes on expiry (per Cache-Control max-age, or defaultJWKSCacheTTL)
-// and also refreshes early when asked for a kid it doesn't have, since key
-// rotation can introduce a new kid before the cache would otherwise expire.
+// jwksCache holds one connector's fetched signing keys (RSA or EC), keyed by
+// kid, so verifying an ID token doesn't refetch the upstream JWKS on every
+// request. It refreshes on expiry (per Cache-Control max-age, or
+// defaultJWKSCacheTTL) and also refreshes early when asked for a kid it
+// doesn't have, since key rotation can introduce a new kid before the cache
+// would otherwise expire.
 type jwksCache struct {
 	mu        sync.Mutex
-	keys      map[string]*rsa.PublicKey
+	keys      map[string]crypto.PublicKey
 	expiresAt time.Time
 }
 
-func (c *jwksCache) resolve(ctx context.Context, client *http.Client, endpoint, keyID string) (*rsa.PublicKey, error) {
+func (c *jwksCache) resolve(ctx context.Context, client *http.Client, endpoint, keyID string) (crypto.PublicKey, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if key, ok := c.keys[keyID]; ok && time.Now().Before(c.expiresAt) {
@@ -417,7 +425,7 @@ func (c *jwksCache) resolve(ctx context.Context, client *http.Client, endpoint, 
 	return key, nil
 }
 
-func fetchJWKS(ctx context.Context, client *http.Client, endpoint string) (map[string]*rsa.PublicKey, time.Duration, error) {
+func fetchJWKS(ctx context.Context, client *http.Client, endpoint string) (map[string]crypto.PublicKey, time.Duration, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("create JWKS request: %w", err)
@@ -436,26 +444,42 @@ func fetchJWKS(ctx context.Context, client *http.Client, endpoint string) (map[s
 			KeyID   string `json:"kid"`
 			N       string `json:"n"`
 			E       string `json:"e"`
+			Curve   string `json:"crv"`
+			X       string `json:"x"`
+			Y       string `json:"y"`
 		} `json:"keys"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxJWKSResponseBytes)).Decode(&document); err != nil {
 		return nil, 0, fmt.Errorf("decode OIDC JWKS: %w", err)
 	}
-	keys := make(map[string]*rsa.PublicKey, len(document.Keys))
+	keys := make(map[string]crypto.PublicKey, len(document.Keys))
 	for _, candidate := range document.Keys {
-		if candidate.KeyType != "RSA" || candidate.KeyID == "" {
+		if candidate.KeyID == "" {
 			continue
 		}
-		n, errN := base64.RawURLEncoding.DecodeString(candidate.N)
-		e, errE := base64.RawURLEncoding.DecodeString(candidate.E)
-		if errN != nil || errE != nil {
-			continue
+		switch candidate.KeyType {
+		case "RSA":
+			n, errN := base64.RawURLEncoding.DecodeString(candidate.N)
+			e, errE := base64.RawURLEncoding.DecodeString(candidate.E)
+			if errN != nil || errE != nil {
+				continue
+			}
+			exponent, err := rsaExponent(e)
+			if err != nil {
+				continue
+			}
+			keys[candidate.KeyID] = &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: exponent}
+		case "EC":
+			if candidate.Curve != "P-256" {
+				continue
+			}
+			x, errX := base64.RawURLEncoding.DecodeString(candidate.X)
+			y, errY := base64.RawURLEncoding.DecodeString(candidate.Y)
+			if errX != nil || errY != nil {
+				continue
+			}
+			keys[candidate.KeyID] = &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(x), Y: new(big.Int).SetBytes(y)}
 		}
-		exponent, err := rsaExponent(e)
-		if err != nil {
-			continue
-		}
-		keys[candidate.KeyID] = &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: exponent}
 	}
 	if len(keys) == 0 {
 		return nil, 0, errors.New("OIDC JWKS has no usable RSA keys")

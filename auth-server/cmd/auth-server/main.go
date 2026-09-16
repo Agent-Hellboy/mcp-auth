@@ -84,6 +84,7 @@ func loadResourceClients(store server.Store, path string) error {
 			Name:              client.Name,
 			TokenEndpointAuth: "private_key_jwt",
 			PublicKeyPEM:      client.PublicKeyPEM,
+			Algorithm:         client.Algorithm,
 		}); err != nil {
 			return fmt.Errorf("register resource client %q: %w", client.ClientID, err)
 		}

@@ -3,8 +3,8 @@ package server
 import (
 	"bytes"
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -17,8 +17,8 @@ import (
 
 // ResourceClient describes one machine-to-machine OAuth client that is
 // pre-provisioned to authenticate with RFC 7523 private_key_jwt, typically a
-// resource server performing RFC 8693 token exchange. Unlike ConnectorConfig,
-// the key material here is a public key and is not sensitive.
+// resource server performing token exchange. Unlike ConnectorConfig, the key
+// material here is a public key and is not sensitive.
 type ResourceClient struct {
 	ClientID string `json:"client_id"`
 	Name     string `json:"name"`
@@ -28,6 +28,11 @@ type ResourceClient struct {
 	// of multi-line PEM text in hand-authored config.
 	PublicKeyPEM  string `json:"public_key_pem"`
 	PublicKeyFile string `json:"public_key_file"`
+	// Algorithm is the JWS algorithm this client signs its client_assertion
+	// with: "RS256" (default), "PS256", or "ES256". It must be compatible
+	// with the key's own type (RS256/PS256 need an RSA key, ES256 needs a
+	// P-256 EC key) — checked at load time, not at first use.
+	Algorithm string `json:"algorithm"`
 }
 
 // LoadResourceClients reads a JSON array of pre-provisioned private_key_jwt
@@ -67,14 +72,27 @@ func LoadResourceClients(path string) ([]ResourceClient, error) {
 			client.PublicKeyPEM = string(keyData)
 			clients[i].PublicKeyPEM = client.PublicKeyPEM
 		}
-		if _, err := parseRSAPublicKeyPEM(client.PublicKeyPEM); err != nil {
+		if client.Algorithm == "" {
+			client.Algorithm = "RS256"
+			clients[i].Algorithm = client.Algorithm
+		}
+		if !validAlgorithm(client.Algorithm) {
+			return nil, fmt.Errorf("resource client %q has an unsupported algorithm %q", client.ClientID, client.Algorithm)
+		}
+		key, err := parsePublicKeyPEM(client.PublicKeyPEM)
+		if err != nil {
 			return nil, fmt.Errorf("resource client %q has an invalid public key: %w", client.ClientID, err)
+		}
+		if !keyMatchesAlgorithm(client.Algorithm, key) {
+			return nil, fmt.Errorf("resource client %q: public key type does not match algorithm %q", client.ClientID, client.Algorithm)
 		}
 	}
 	return clients, nil
 }
 
-func parseRSAPublicKeyPEM(value string) (*rsa.PublicKey, error) {
+// parsePublicKeyPEM parses a PKIX PEM-encoded public key and returns it as
+// either *rsa.PublicKey or *ecdsa.PublicKey.
+func parsePublicKeyPEM(value string) (crypto.PublicKey, error) {
 	block, _ := pem.Decode([]byte(value))
 	if block == nil {
 		return nil, errors.New("public key is not PEM encoded")
@@ -83,19 +101,23 @@ func parseRSAPublicKeyPEM(value string) (*rsa.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse public key: %w", err)
 	}
-	key, ok := parsed.(*rsa.PublicKey)
-	if !ok {
-		return nil, errors.New("public key is not RSA")
+	switch parsed.(type) {
+	case *rsa.PublicKey, *ecdsa.PublicKey:
+		return parsed, nil
+	default:
+		return nil, errors.New("public key must be RSA or EC")
 	}
-	return key, nil
 }
 
 // verifyClientAssertion validates an RFC 7523 private_key_jwt client
 // assertion against a registered client's public key and returns its claims.
-// The caller is responsible for replay protection (jti) and for checking
-// that the client is actually registered for private_key_jwt.
-func verifyClientAssertion(assertion, publicKeyPEM, clientID, audience string) (map[string]any, error) {
-	key, err := parseRSAPublicKeyPEM(publicKeyPEM)
+// The assertion's alg header must match algorithm exactly — the client
+// authenticates with whichever single algorithm it registered a key for, not
+// any algorithm this server happens to support. The caller is responsible
+// for replay protection (jti) and for checking that the client is actually
+// registered for private_key_jwt.
+func verifyClientAssertion(assertion, publicKeyPEM, algorithm, clientID, audience string) (map[string]any, error) {
+	key, err := parsePublicKeyPEM(publicKeyPEM)
 	if err != nil {
 		return nil, err
 	}
@@ -106,8 +128,8 @@ func verifyClientAssertion(assertion, publicKeyPEM, clientID, audience string) (
 	var header struct {
 		Algorithm string `json:"alg"`
 	}
-	if err := decodeJWTPart(parts[0], &header); err != nil || header.Algorithm != "RS256" {
-		return nil, errors.New("client assertion algorithm is invalid")
+	if err := decodeJWTPart(parts[0], &header); err != nil || header.Algorithm != algorithm {
+		return nil, errors.New("client assertion algorithm does not match the registered algorithm")
 	}
 	var claims map[string]any
 	if err := decodeJWTPart(parts[1], &claims); err != nil {
@@ -117,8 +139,7 @@ func verifyClientAssertion(assertion, publicKeyPEM, clientID, audience string) (
 	if err != nil {
 		return nil, errors.New("client assertion signature is malformed")
 	}
-	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
-	if rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], signature) != nil {
+	if verifySignature(algorithm, key, []byte(parts[0]+"."+parts[1]), signature) != nil {
 		return nil, errors.New("client assertion signature is invalid")
 	}
 	if claims["iss"] != clientID || claims["sub"] != clientID {

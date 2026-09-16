@@ -35,9 +35,12 @@ Important settings:
 - `MCP_AUTH_RESOURCE_CLIENTS_FILE`: JSON array of resource servers pre-provisioned to
   authenticate the token-exchange grant with RFC 7523 `private_key_jwt`. Each entry
   is `{"client_id", "name", "public_key_pem"}` or `{"client_id", "name", "public_key_file"}`
-  (exactly one of the last two). A resource server's own private key never appears
-  here; only its public key is registered, so the auth server can verify the
-  `client_assertion` it presents on every token-exchange request.
+  (exactly one of the last two), plus an optional `"algorithm"` (`RS256` default, or
+  `PS256`/`ES256` — must match the key's own type). A resource server's own private
+  key never appears here; only its public key is registered, so the auth server can
+  verify the `client_assertion` it presents on every token-exchange request, signed
+  with exactly the algorithm it registered — not any algorithm this server happens
+  to support, so a client can't switch algorithms without re-registering its key.
 
 The Dockerfile builds a static, non-root image. Put TLS termination in a trusted reverse proxy or serve the endpoints through an HTTPS gateway.
 
@@ -64,6 +67,11 @@ environment variable, never a literal secret. `client_id` can likewise be
 supplied indirectly as `client_id_env`; set exactly one of the two. All
 provider-specific behavior is behind `IdentityProvider` and `TokenExchanger`
 interfaces.
+
+`allowed_algorithms` lists which JWS algorithms this connector's ID tokens
+may be signed with: any of `RS256`, `PS256`, `ES256`. Defaults to `["RS256"]`
+when unset, matching every connector configured before this field existed —
+a provider that signs with ES256 or PS256 needs it set explicitly.
 
 `downstream_token_strategy` selects how a resource server's downstream
 credential (the one it sends to the actual downstream API — Databricks, an

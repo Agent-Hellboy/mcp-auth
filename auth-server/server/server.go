@@ -478,7 +478,11 @@ func (s *Server) authenticateClientAssertion(r *http.Request) (Client, error) {
 		return Client{}, errors.New("client is not registered for private_key_jwt")
 	}
 	tokenEndpoint := strings.TrimRight(s.Config.Issuer, "/") + "/token"
-	claims, err := verifyClientAssertion(r.FormValue("client_assertion"), client.PublicKeyPEM, clientID, tokenEndpoint)
+	algorithm := client.Algorithm
+	if algorithm == "" {
+		algorithm = "RS256"
+	}
+	claims, err := verifyClientAssertion(r.FormValue("client_assertion"), client.PublicKeyPEM, algorithm, clientID, tokenEndpoint)
 	if err != nil {
 		return Client{}, err
 	}
