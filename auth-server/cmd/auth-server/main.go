@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -33,6 +34,10 @@ func main() {
 		slog.Error("server initialization failed", "error", err)
 		os.Exit(1)
 	}
+	if err := loadResourceClients(authServer.Store, config.ResourceClientsFile); err != nil {
+		slog.Error("resource client registration failed", "error", err)
+		os.Exit(1)
+	}
 	if config.LocalDevelopment && config.LocalClientID != "" {
 		if err := authServer.Store.SaveClient(server.Client{
 			ID:                config.LocalClientID,
@@ -59,6 +64,31 @@ func main() {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+// loadResourceClients registers pre-provisioned private_key_jwt clients (for
+// example, a resource server performing RFC 8693 token exchange) so the
+// token endpoint can authenticate them. Registration is re-applied on every
+// startup, so the file is the source of truth and edits take effect on restart.
+func loadResourceClients(store server.Store, path string) error {
+	if path == "" {
+		return nil
+	}
+	clients, err := server.LoadResourceClients(path)
+	if err != nil {
+		return err
+	}
+	for _, client := range clients {
+		if err := store.SaveClient(server.Client{
+			ID:                client.ClientID,
+			Name:              client.Name,
+			TokenEndpointAuth: "private_key_jwt",
+			PublicKeyPEM:      client.PublicKeyPEM,
+		}); err != nil {
+			return fmt.Errorf("register resource client %q: %w", client.ClientID, err)
+		}
+	}
+	return nil
 }
 
 func buildStore(config server.Config) (server.Store, func(), error) {

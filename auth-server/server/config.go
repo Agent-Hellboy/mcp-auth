@@ -32,6 +32,7 @@ type Config struct {
 	ConnectorName               string
 	StoreBackend                string
 	DatabaseURL                 string
+	ResourceClientsFile         string
 }
 
 // Validate applies deployment safety checks that are intentionally separate
@@ -106,6 +107,7 @@ func ConfigFromEnv() Config {
 		ConnectorName:               os.Getenv("MCP_AUTH_CONNECTOR"),
 		StoreBackend:                env("MCP_AUTH_STORE", "memory"),
 		DatabaseURL:                 os.Getenv("MCP_AUTH_DATABASE_URL"),
+		ResourceClientsFile:         os.Getenv("MCP_AUTH_RESOURCE_CLIENTS_FILE"),
 	}
 }
 

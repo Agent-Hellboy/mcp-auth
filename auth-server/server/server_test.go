@@ -2,10 +2,17 @@ package server
 
 import (
 	"bytes"
+	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -163,6 +170,171 @@ func TestBadPKCERejected(t *testing.T) {
 	instance.Handler().ServeHTTP(tokenRecorder, tokenRequest)
 	if tokenRecorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected bad request, got %d", tokenRecorder.Code)
+	}
+}
+
+func TestLoadResourceClientsValidatesPublicKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resource-clients.json")
+	if err := os.WriteFile(path, []byte(`[{"client_id":"bad","public_key_pem":"not-a-key"}]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadResourceClients(path); err == nil {
+		t.Fatal("expected an invalid public key to be rejected")
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	valid := fmt.Sprintf(`[{"client_id":"resource-server","name":"databricks-mcp","public_key_pem":%q}]`, string(publicPEM))
+	if err := os.WriteFile(path, []byte(valid), 0600); err != nil {
+		t.Fatal(err)
+	}
+	clients, err := LoadResourceClients(path)
+	if err != nil || len(clients) != 1 || clients[0].ClientID != "resource-server" {
+		t.Fatalf("load resource clients: %v, %+v", err, clients)
+	}
+}
+
+func TestPrivateKeyJWTClientCannotBypassAssertionViaFormClientID(t *testing.T) {
+	instance := testServer(t)
+	instance.TokenExchanger = LocalTokenExchanger{Issuer: instance.Config.Issuer, KeyProvider: instance.KeyProvider, TTL: time.Minute}
+	registerResourceClient(t, instance, "resource-server")
+	// No client_assertion at all: a private_key_jwt client has no secret, so
+	// it must not fall through the "no secret configured" bypass meant for
+	// TokenEndpointAuth "none" DCR clients.
+	form := url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:token-exchange"}, "subject_token": {"whatever"}, "audience": {"https://downstream.example.com"}, "client_id": {"resource-server"}}
+	request := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected a private_key_jwt client without an assertion to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestTokenExchangeRequiresClientAuthentication(t *testing.T) {
+	instance := testServer(t)
+	instance.TokenExchanger = LocalTokenExchanger{Issuer: instance.Config.Issuer, KeyProvider: instance.KeyProvider, TTL: time.Minute}
+	form := url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:token-exchange"}, "subject_token": {"whatever"}, "audience": {"https://downstream.example.com"}}
+	request := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated token exchange to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func registerResourceClient(t *testing.T, instance *Server, clientID string) *rsa.PrivateKey {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER})
+	if err := instance.Store.SaveClient(Client{ID: clientID, TokenEndpointAuth: "private_key_jwt", PublicKeyPEM: string(publicPEM)}); err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+func signTestClientAssertion(t *testing.T, key *rsa.PrivateKey, clientID, audience string) string {
+	t.Helper()
+	now := time.Now().UTC()
+	header := map[string]any{"typ": "JWT", "alg": "RS256"}
+	claims := map[string]any{"iss": clientID, "sub": clientID, "aud": audience, "iat": now.Unix(), "exp": now.Add(time.Minute).Unix(), "jti": randomID()}
+	headEncoded := base64.RawURLEncoding.EncodeToString(mustJSON(header))
+	claimEncoded := base64.RawURLEncoding.EncodeToString(mustJSON(claims))
+	message := []byte(headEncoded + "." + claimEncoded)
+	digest := sha256.Sum256(message)
+	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(message) + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func exchangeForm(subjectToken, clientID, assertion string) url.Values {
+	return url.Values{
+		"grant_type":            {"urn:ietf:params:oauth:grant-type:token-exchange"},
+		"subject_token":         {subjectToken},
+		"audience":              {"https://downstream.example.com"},
+		"client_id":             {clientID},
+		"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+		"client_assertion":      {assertion},
+	}
+}
+
+func TestTokenExchangeWithValidPrivateKeyJWTSucceedsOnce(t *testing.T) {
+	instance := testServer(t)
+	instance.TokenExchanger = LocalTokenExchanger{Issuer: instance.Config.Issuer, KeyProvider: instance.KeyProvider, TTL: time.Minute}
+	key := registerResourceClient(t, instance, "resource-server")
+	subjectToken, err := instance.KeyProvider.Sign(context.Background(), instance.Config.Issuer, "user-1", instance.Config.Resource, []string{"tools:read"}, time.Minute, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertion := signTestClientAssertion(t, key, "resource-server", instance.Config.Issuer+"/token")
+	form := exchangeForm(subjectToken, "resource-server", assertion)
+
+	request := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected exchange to succeed, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	replay := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	replay.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	replayRecorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(replayRecorder, replay)
+	if replayRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected replayed client assertion to be rejected, got %d: %s", replayRecorder.Code, replayRecorder.Body.String())
+	}
+}
+
+func TestTokenExchangeRejectsForeignSubjectToken(t *testing.T) {
+	instance := testServer(t)
+	instance.TokenExchanger = LocalTokenExchanger{Issuer: instance.Config.Issuer, KeyProvider: instance.KeyProvider, TTL: time.Minute}
+	key := registerResourceClient(t, instance, "resource-server")
+	assertion := signTestClientAssertion(t, key, "resource-server", instance.Config.Issuer+"/token")
+	form := exchangeForm("not-a-token-this-server-issued", "resource-server", assertion)
+
+	request := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected a fabricated subject_token to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestTokenExchangeRejectsSubjectTokenForWrongResource(t *testing.T) {
+	instance := testServer(t)
+	instance.TokenExchanger = LocalTokenExchanger{Issuer: instance.Config.Issuer, KeyProvider: instance.KeyProvider, TTL: time.Minute}
+	key := registerResourceClient(t, instance, "resource-server")
+	subjectToken, err := instance.KeyProvider.Sign(context.Background(), instance.Config.Issuer, "user-1", "http://some-other-resource/mcp", []string{"tools:read"}, time.Minute, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertion := signTestClientAssertion(t, key, "resource-server", instance.Config.Issuer+"/token")
+	form := exchangeForm(subjectToken, "resource-server", assertion)
+
+	request := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected a subject_token minted for a different resource to be rejected, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 

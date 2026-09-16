@@ -28,6 +28,33 @@ services:
       timeout: 2s
       retries: 15
 
+  # Generates the resource server's (databricks-mcp) private_key_jwt key pair
+  # once, out of band, so its public half can be registered with mcp-auth
+  # ahead of time. This mirrors real deployment: the auth server must know a
+  # resource server's public key before it can verify that resource server's
+  # token-exchange requests.
+  resource-keygen:
+    image: alpine:3.22
+    # Mounted at the same path every consumer uses (/var/lib/mcp-resource-auth),
+    # since resource-clients.json embeds an absolute public_key_file path that
+    # mcp-auth reads from its own container's filesystem, not this one's.
+    command: >-
+      sh -c "apk add --no-cache openssl >/dev/null &&
+      chmod 0777 /var/lib/mcp-resource-auth &&
+      openssl genrsa -out /var/lib/mcp-resource-auth/private.pem 2048 &&
+      openssl rsa -in /var/lib/mcp-resource-auth/private.pem -pubout -out /var/lib/mcp-resource-auth/public.pem &&
+      printf '%s\n' compose-e2e-key > /var/lib/mcp-resource-auth/key_id &&
+      printf '%s' '[{\"client_id\":\"compose-resource-server\",\"name\":\"databricks-mcp e2e\",\"public_key_file\":\"/var/lib/mcp-resource-auth/public.pem\"}]' > /var/lib/mcp-resource-auth/resource-clients.json &&
+      chmod 0644 /var/lib/mcp-resource-auth/private.pem /var/lib/mcp-resource-auth/public.pem /var/lib/mcp-resource-auth/key_id /var/lib/mcp-resource-auth/resource-clients.json &&
+      sleep infinity"
+    volumes:
+      - resource-auth-keys:/var/lib/mcp-resource-auth
+    healthcheck:
+      test: ["CMD", "test", "-s", "/var/lib/mcp-resource-auth/resource-clients.json"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
   mcp-server:
     build:
       context: ..
@@ -46,6 +73,11 @@ services:
       DATABRICKS_REQUIRED_GROUP: compose-test-group
       DATABRICKS_ALLOWED_WAREHOUSE_IDS: compose-test-warehouse
       MCP_METRICS_ENABLED: "false"
+    volumes:
+      - resource-auth-keys:/var/lib/mcp-resource-auth:ro
+    depends_on:
+      resource-keygen:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD
@@ -74,10 +106,12 @@ services:
       MCP_AUTH_CONNECTORS_FILE: /etc/mcp-auth/connectors.json
       MCP_AUTH_CONNECTOR: compose-oidc
       MCP_AUTH_ALLOW_INSECURE_CONNECTORS: "true"
+      MCP_AUTH_RESOURCE_CLIENTS_FILE: /var/lib/mcp-resource-auth/resource-clients.json
     volumes:
       - mcp-auth-keys:/keys:ro
       - mcp-auth-data:/data
       - ../tests/e2e/mock-oidc-connectors.json:/etc/mcp-auth/connectors.json:ro
+      - resource-auth-keys:/var/lib/mcp-resource-auth:ro
     depends_on:
       mcp-server:
         condition: service_healthy
@@ -85,15 +119,21 @@ services:
         condition: service_healthy
       mcp-auth-keygen:
         condition: service_healthy
+      resource-keygen:
+        condition: service_healthy
 
   e2e-client:
     build:
       context: ..
       dockerfile: tests/e2e/Dockerfile.e2e-client
+    volumes:
+      - resource-auth-keys:/var/lib/mcp-resource-auth:ro
     depends_on:
       mcp-auth:
         condition: service_started
       mcp-server:
+        condition: service_healthy
+      resource-keygen:
         condition: service_healthy
 
 networks:
@@ -106,3 +146,4 @@ networks:
 volumes:
   mcp-auth-keys:
   mcp-auth-data:
+  resource-auth-keys:

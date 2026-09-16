@@ -97,7 +97,7 @@ func (s *Server) authorizationMetadata(w http.ResponseWriter, _ *http.Request) {
 		"response_types_supported":                       []string{"code"},
 		"grant_types_supported":                          []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange"},
 		"code_challenge_methods_supported":               []string{"S256"},
-		"token_endpoint_auth_methods_supported":          []string{"none", "client_secret_basic", "client_secret_post"},
+		"token_endpoint_auth_methods_supported":          []string{"none", "client_secret_basic", "client_secret_post", "private_key_jwt"},
 		"scopes_supported":                               s.Config.AllowedScopes,
 		"authorization_response_iss_parameter_supported": s.Config.AuthorizationResponseIssuer,
 	})
@@ -274,11 +274,8 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusBadRequest, "invalid form")
 		return
 	}
-	if r.FormValue("grant_type") == "urn:ietf:params:oauth:grant-type:token-exchange" {
-		s.exchange(w, r)
-		return
-	}
-	if err := s.authenticateClient(r); err != nil {
+	client, err := s.authenticateClient(r)
+	if err != nil {
 		oauthError(w, http.StatusUnauthorized, "invalid_client")
 		return
 	}
@@ -287,6 +284,8 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		s.authorizationCodeToken(w, r)
 	case "refresh_token":
 		s.refreshTokenToken(w, r)
+	case "urn:ietf:params:oauth:grant-type:token-exchange":
+		s.exchange(w, r, client)
 	default:
 		oauthError(w, http.StatusBadRequest, "unsupported_grant_type")
 	}
@@ -343,18 +342,35 @@ func (s *Server) issueTokens(w http.ResponseWriter, clientID, subject string, sc
 	writeJSON(w, http.StatusOK, map[string]any{"access_token": access, "token_type": "Bearer", "expires_in": int(s.Config.AccessTokenTTL.Seconds()), "refresh_token": refresh, "scope": strings.Join(scopes, " ")})
 }
 
-func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
+// exchange handles RFC 8693 token exchange. The caller has already
+// authenticated as client (see authenticateClient); this additionally
+// verifies that subject_token is a still-valid access token this server
+// itself issued for its own resource, rather than relaying an arbitrary
+// caller-supplied string to the upstream provider.
+func (s *Server) exchange(w http.ResponseWriter, r *http.Request, client Client) {
 	if s.TokenExchanger == nil {
 		oauthError(w, http.StatusBadRequest, "unsupported_grant_type")
 		return
 	}
-	response, err := s.TokenExchanger.Exchange(r.Context(), ExchangeRequest{SubjectToken: r.FormValue("subject_token"), RequestedTokenType: r.FormValue("requested_token_type"), Audience: r.FormValue("audience"), Scope: strings.Fields(r.FormValue("scope"))})
+	subjectToken := r.FormValue("subject_token")
+	subjectClaims, err := s.KeyProvider.Verify(r.Context(), subjectToken)
 	if err != nil {
-		s.Audit.Event("token_exchange", "failure", map[string]any{"audience": r.FormValue("audience")})
+		s.Audit.Event("token_exchange", "failure", map[string]any{"client_id": client.ID, "audience": r.FormValue("audience"), "reason": "invalid_subject_token"})
+		oauthError(w, http.StatusBadRequest, "invalid_grant")
+		return
+	}
+	if subjectClaims["aud"] != s.Config.Resource {
+		s.Audit.Event("token_exchange", "failure", map[string]any{"client_id": client.ID, "audience": r.FormValue("audience"), "reason": "subject_token_audience_mismatch"})
+		oauthError(w, http.StatusBadRequest, "invalid_grant")
+		return
+	}
+	response, err := s.TokenExchanger.Exchange(r.Context(), ExchangeRequest{SubjectToken: subjectToken, RequestedTokenType: r.FormValue("requested_token_type"), Audience: r.FormValue("audience"), Scope: strings.Fields(r.FormValue("scope"))})
+	if err != nil {
+		s.Audit.Event("token_exchange", "failure", map[string]any{"client_id": client.ID, "audience": r.FormValue("audience")})
 		oauthError(w, http.StatusBadRequest, "invalid_target")
 		return
 	}
-	s.Audit.Event("token_exchange", "success", map[string]any{"audience": r.FormValue("audience")})
+	s.Audit.Event("token_exchange", "success", map[string]any{"client_id": client.ID, "subject": subjectClaims["sub"], "audience": r.FormValue("audience")})
 	writeJSON(w, http.StatusOK, map[string]any{"access_token": response.AccessToken, "token_type": response.TokenType, "expires_in": response.ExpiresIn, "scope": response.Scope})
 }
 
@@ -406,22 +422,60 @@ func (s *Server) revoke(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (s *Server) authenticateClient(r *http.Request) error {
+func (s *Server) authenticateClient(r *http.Request) (Client, error) {
+	if r.FormValue("client_assertion") != "" || r.FormValue("client_assertion_type") != "" {
+		return s.authenticateClientAssertion(r)
+	}
 	clientID, secret, ok := r.BasicAuth()
 	if !ok {
 		clientID, secret = r.FormValue("client_id"), r.FormValue("client_secret")
 	}
 	client, err := s.Store.GetClient(clientID)
 	if err != nil {
-		return err
+		return Client{}, err
+	}
+	if client.TokenEndpointAuth == "private_key_jwt" {
+		return Client{}, errors.New("client is registered for private_key_jwt and must present a client_assertion")
 	}
 	if client.TokenEndpointAuth == "none" || client.SecretHash == "" {
-		return nil
+		return client, nil
 	}
 	if subtle.ConstantTimeCompare([]byte(client.SecretHash), []byte(HashSecret(secret))) != 1 {
-		return errors.New("invalid client secret")
+		return Client{}, errors.New("invalid client secret")
 	}
-	return nil
+	return client, nil
+}
+
+// authenticateClientAssertion implements the client authentication half of
+// RFC 7523 private_key_jwt: the caller proves possession of a pre-registered
+// private key instead of a shared secret. This is the resource-server
+// authentication that the token-exchange grant previously skipped entirely.
+func (s *Server) authenticateClientAssertion(r *http.Request) (Client, error) {
+	if r.FormValue("client_assertion_type") != "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" {
+		return Client{}, errors.New("unsupported client_assertion_type")
+	}
+	clientID := r.FormValue("client_id")
+	if clientID == "" {
+		return Client{}, errors.New("client_id is required with client_assertion")
+	}
+	client, err := s.Store.GetClient(clientID)
+	if err != nil {
+		return Client{}, err
+	}
+	if client.TokenEndpointAuth != "private_key_jwt" || client.PublicKeyPEM == "" {
+		return Client{}, errors.New("client is not registered for private_key_jwt")
+	}
+	tokenEndpoint := strings.TrimRight(s.Config.Issuer, "/") + "/token"
+	claims, err := verifyClientAssertion(r.FormValue("client_assertion"), client.PublicKeyPEM, clientID, tokenEndpoint)
+	if err != nil {
+		return Client{}, err
+	}
+	jti, _ := claims["jti"].(string)
+	exp, _ := claims["exp"].(float64)
+	if err := s.Store.ConsumeClientAssertionJTI(clientID, jti, time.Unix(int64(exp), 0)); err != nil {
+		return Client{}, fmt.Errorf("client assertion rejected: %w", err)
+	}
+	return client, nil
 }
 
 func (s *Server) cors(next http.Handler) http.Handler {

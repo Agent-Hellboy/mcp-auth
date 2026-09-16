@@ -17,6 +17,9 @@ type Client struct {
 	RedirectURIs      []string
 	TokenEndpointAuth string
 	SecretHash        string
+	// PublicKeyPEM holds an RSA public key (PKIX, PEM-encoded) for clients
+	// registered with TokenEndpointAuth "private_key_jwt". It is never secret.
+	PublicKeyPEM string
 }
 
 type AuthorizationCode struct {
@@ -60,18 +63,24 @@ type Store interface {
 	RevokeRefreshToken(string) error
 	SaveConsentRequest(ConsentRequest) error
 	ConsumeConsentRequest(string, time.Time) (ConsentRequest, error)
+	// ConsumeClientAssertionJTI records a client_assertion's (client_id, jti)
+	// pair as used, returning ErrAlreadyUsed if it was already consumed while
+	// still valid. This bounds RFC 7523 private_key_jwt replay to a single use
+	// per assertion, regardless of the assertion's own short lifetime.
+	ConsumeClientAssertionJTI(clientID, jti string, expiresAt time.Time) error
 }
 
 type MemoryStore struct {
-	mu      sync.Mutex
-	clients map[string]Client
-	codes   map[string]AuthorizationCode
-	refresh map[string]RefreshToken
-	consent map[string]ConsentRequest
+	mu         sync.Mutex
+	clients    map[string]Client
+	codes      map[string]AuthorizationCode
+	refresh    map[string]RefreshToken
+	consent    map[string]ConsentRequest
+	assertions map[string]time.Time
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{clients: map[string]Client{}, codes: map[string]AuthorizationCode{}, refresh: map[string]RefreshToken{}, consent: map[string]ConsentRequest{}}
+	return &MemoryStore{clients: map[string]Client{}, codes: map[string]AuthorizationCode{}, refresh: map[string]RefreshToken{}, consent: map[string]ConsentRequest{}, assertions: map[string]time.Time{}}
 }
 
 func HashSecret(value string) string {
@@ -83,6 +92,23 @@ func (s *MemoryStore) SaveClient(client Client) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.clients[client.ID] = client
+	return nil
+}
+
+func (s *MemoryStore) ConsumeClientAssertionJTI(clientID, jti string, expiresAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for key, expiry := range s.assertions {
+		if expiry.Before(now) {
+			delete(s.assertions, key)
+		}
+	}
+	key := clientID + "|" + jti
+	if expiry, ok := s.assertions[key]; ok && expiry.After(now) {
+		return ErrAlreadyUsed
+	}
+	s.assertions[key] = expiresAt
 	return nil
 }
 

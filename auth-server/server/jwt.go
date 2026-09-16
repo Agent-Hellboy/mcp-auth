@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -74,6 +75,49 @@ func (k *KeyManager) Sign(issuer, subject, resource string, scopes []string, ttl
 		return "", fmt.Errorf("sign access token: %w", err)
 	}
 	return string(message) + "." + base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+// Verify checks a token signed by this key manager's own private key and
+// returns its claims. It is used to confirm that a subject_token presented to
+// the token-exchange grant was actually issued by this server, rather than
+// relaying an arbitrary caller-supplied string upstream.
+func (k *KeyManager) Verify(token string) (map[string]any, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, errors.New("token is malformed")
+	}
+	var header struct {
+		Algorithm string `json:"alg"`
+		KeyID     string `json:"kid"`
+	}
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, errors.New("token header is malformed")
+	}
+	if err := json.Unmarshal(headerBytes, &header); err != nil || header.Algorithm != "RS256" || header.KeyID != k.KeyID {
+		return nil, errors.New("token algorithm or key is invalid")
+	}
+	claimBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, errors.New("token claims are malformed")
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(claimBytes, &claims); err != nil {
+		return nil, errors.New("token claims are invalid")
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return nil, errors.New("token signature is malformed")
+	}
+	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	if rsa.VerifyPKCS1v15(&k.PrivateKey.PublicKey, cryptoHashSHA256, digest[:], signature) != nil {
+		return nil, errors.New("token signature is invalid")
+	}
+	exp, ok := claims["exp"].(float64)
+	if !ok || time.Now().After(time.Unix(int64(exp), 0)) {
+		return nil, errors.New("token is expired")
+	}
+	return claims, nil
 }
 
 // Kept as a named value to make the signing primitive explicit in audits.

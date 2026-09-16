@@ -3,11 +3,10 @@
 import asyncio
 import re
 import time
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
 from mcp_auth_client import (
     AsyncHTTPClient,
     AuthorizationServerConfig,
@@ -28,6 +27,7 @@ MCP_URL = "http://mcp-server:6328/mcp"
 REDIRECT_URI = "http://127.0.0.1:39001/callback"
 DOWNSTREAM_AUDIENCE = "https://api.example.com"
 MOCK_OIDC_URL = "http://mock-oidc:8082"
+RESOURCE_AUTH_KEY_DIR = Path("/var/lib/mcp-resource-auth")
 INITIALIZE_PARAMS = {
     "protocolVersion": "2025-06-18",
     "capabilities": {},
@@ -173,14 +173,16 @@ def run_flow(validate_issuer: bool) -> None:
         )
 
         async def exchange_downstream_token() -> str:
-            private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            private_key_pem = private_key.private_bytes(
-                serialization.Encoding.PEM,
-                serialization.PrivateFormat.PKCS8,
-                serialization.NoEncryption(),
-            )
+            # Reuses the same key pair mcp-server authenticates with, since
+            # mcp-auth only has one public key registered for
+            # "compose-resource-server" (see resource-keygen in
+            # docker-compose.e2e.yml). A resource server's private_key_jwt
+            # key must be pre-registered with the auth server; it can't be
+            # generated ad hoc by whoever calls the token endpoint.
+            private_key_pem = RESOURCE_AUTH_KEY_DIR.joinpath("private.pem").read_bytes()
+            key_id = RESOURCE_AUTH_KEY_DIR.joinpath("key_id").read_text().strip()
             client_auth = PrivateKeyJWTClientAuth(
-                "compose-resource-server", private_key_pem, "compose-e2e-key"
+                "compose-resource-server", private_key_pem, key_id
             )
             async with TokenExchangeClient(
                 f"{AUTH_URL}/token", client_auth=client_auth
@@ -206,7 +208,10 @@ def run_flow(validate_issuer: bool) -> None:
             flush=True,
         )
 
-        exchange_failure = client.post(
+        # A resource server can no longer relay a subject_token without
+        # authenticating itself: this must be rejected before it ever reaches
+        # the upstream token-exchange call.
+        unauthenticated_exchange = client.post(
             f"{AUTH_URL}/token",
             data={
                 "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -214,9 +219,29 @@ def run_flow(validate_issuer: bool) -> None:
                 "subject_token": access_token,
             },
         )
+        assert unauthenticated_exchange.status_code == 401
+        assert unauthenticated_exchange.json()["error"] == "invalid_client"
+        print("[e2e] unauthenticated token-exchange rejection passed", flush=True)
+
+        private_key_pem = RESOURCE_AUTH_KEY_DIR.joinpath("private.pem").read_bytes()
+        key_id = RESOURCE_AUTH_KEY_DIR.joinpath("key_id").read_text().strip()
+        bad_target_assertion = PrivateKeyJWTClientAuth(
+            "compose-resource-server", private_key_pem, key_id
+        ).assertion(f"{AUTH_URL}/token")
+        exchange_failure = client.post(
+            f"{AUTH_URL}/token",
+            data={
+                "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                "client_id": "compose-resource-server",
+                "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+                "client_assertion": bad_target_assertion,
+                "subject_token": access_token,
+                "audience": "",
+            },
+        )
         assert exchange_failure.status_code == 400
         assert exchange_failure.json()["error"] == "invalid_target"
-        print("[e2e] token-exchange failure path passed", flush=True)
+        print("[e2e] authenticated token-exchange failure path passed", flush=True)
 
         refresh_response = client.post(
             f"{AUTH_URL}/token",

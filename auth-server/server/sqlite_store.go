@@ -44,7 +44,11 @@ func (s *SQLiteStore) initialize() error {
 	_, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS clients (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, redirect_uris TEXT NOT NULL,
-  token_endpoint_auth TEXT NOT NULL, secret_hash TEXT NOT NULL
+  token_endpoint_auth TEXT NOT NULL, secret_hash TEXT NOT NULL, public_key_pem TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS client_assertions (
+  client_id TEXT NOT NULL, jti TEXT NOT NULL, expires_at INTEGER NOT NULL,
+  PRIMARY KEY (client_id, jti)
 );
 CREATE TABLE IF NOT EXISTS authorization_codes (
   value_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL,
@@ -70,18 +74,18 @@ func (s *SQLiteStore) SaveClient(client Client) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`INSERT INTO clients (id,name,redirect_uris,token_endpoint_auth,secret_hash)
-VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, redirect_uris=excluded.redirect_uris,
-token_endpoint_auth=excluded.token_endpoint_auth, secret_hash=excluded.secret_hash`,
-		client.ID, client.Name, string(redirects), client.TokenEndpointAuth, client.SecretHash)
+	_, err = s.db.Exec(`INSERT INTO clients (id,name,redirect_uris,token_endpoint_auth,secret_hash,public_key_pem)
+VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, redirect_uris=excluded.redirect_uris,
+token_endpoint_auth=excluded.token_endpoint_auth, secret_hash=excluded.secret_hash, public_key_pem=excluded.public_key_pem`,
+		client.ID, client.Name, string(redirects), client.TokenEndpointAuth, client.SecretHash, client.PublicKeyPEM)
 	return err
 }
 
 func (s *SQLiteStore) GetClient(id string) (Client, error) {
 	var client Client
 	var redirects string
-	err := s.db.QueryRow(`SELECT id,name,redirect_uris,token_endpoint_auth,secret_hash FROM clients WHERE id=?`, id).
-		Scan(&client.ID, &client.Name, &redirects, &client.TokenEndpointAuth, &client.SecretHash)
+	err := s.db.QueryRow(`SELECT id,name,redirect_uris,token_endpoint_auth,secret_hash,public_key_pem FROM clients WHERE id=?`, id).
+		Scan(&client.ID, &client.Name, &redirects, &client.TokenEndpointAuth, &client.SecretHash, &client.PublicKeyPEM)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Client{}, ErrNotFound
 	}
@@ -92,6 +96,21 @@ func (s *SQLiteStore) GetClient(id string) (Client, error) {
 		return Client{}, fmt.Errorf("decode client redirect URIs: %w", err)
 	}
 	return client, nil
+}
+
+func (s *SQLiteStore) ConsumeClientAssertionJTI(clientID, jti string, expiresAt time.Time) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM client_assertions WHERE expires_at < ?`, time.Now().UnixNano()); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO client_assertions (client_id,jti,expires_at) VALUES (?,?,?)`, clientID, jti, expiresAt.UnixNano()); err != nil {
+		return ErrAlreadyUsed
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) SaveAuthorizationCode(code AuthorizationCode) error {

@@ -168,6 +168,10 @@ class _ResourceHandler(BaseHTTPRequestHandler):
     auth_jwks: dict[str, object]
     token_endpoint = ""
     downstream_url = ""
+    # Fixed for the lifetime of the test so its public half can be registered
+    # with the auth server ahead of time, mirroring how a real resource server
+    # is pre-provisioned rather than allowed to self-register a signing key.
+    exchange_private_key_pem: bytes
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/.well-known/oauth-protected-resource":
@@ -204,19 +208,13 @@ class _ResourceHandler(BaseHTTPRequestHandler):
         )
         try:
             mcp_claims = asyncio.run(verifier.verify(authorization.removeprefix("Bearer ")))
-            private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            private_key_pem = private_key.private_bytes(
-                serialization.Encoding.PEM,
-                serialization.PrivateFormat.PKCS8,
-                serialization.NoEncryption(),
-            )
 
             async def exchange() -> str:
                 exchange_client = build_exchange_client(
                     self.token_endpoint,
                     "https://api.example.com",
                     "resource-server",
-                    private_key_pem,
+                    self.exchange_private_key_pem,
                     "resource-key",
                 )
                 try:
@@ -272,12 +270,24 @@ def test_runtime_oidc_connector_and_downstream_tools_call() -> None:
     _DownstreamHandler.signing_key = oidc_key.public_key()
     _DownstreamHandler.issuer = oidc_url
 
+    resource_exchange_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    resource_exchange_private_pem = resource_exchange_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    resource_exchange_public_pem = resource_exchange_key.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
     auth_url = f"http://127.0.0.1:{_free_port()}"
     resource_server, resource_thread, resource_url = _serve(_ResourceHandler)
     _ResourceHandler.resource_url = resource_url
     _ResourceHandler.issuer = auth_url
     _ResourceHandler.token_endpoint = auth_url + "/token"
     _ResourceHandler.downstream_url = downstream_url + "/data"
+    _ResourceHandler.exchange_private_key_pem = resource_exchange_private_pem
 
     root = Path(__file__).parents[2]
     binary = os.environ.get("MCP_AUTH_SERVER_BINARY")
@@ -301,6 +311,18 @@ def test_runtime_oidc_connector_and_downstream_tools_call() -> None:
     with tempfile.TemporaryDirectory() as temporary_directory:
         connector_file = Path(temporary_directory) / "connectors.json"
         connector_file.write_text(json.dumps(connector))
+        resource_clients_file = Path(temporary_directory) / "resource-clients.json"
+        resource_clients_file.write_text(
+            json.dumps(
+                [
+                    {
+                        "client_id": "resource-server",
+                        "name": "test resource server",
+                        "public_key_pem": resource_exchange_public_pem.decode(),
+                    }
+                ]
+            )
+        )
         environment = {
             **os.environ,
             "MCP_AUTH_ISSUER": auth_url,
@@ -312,6 +334,7 @@ def test_runtime_oidc_connector_and_downstream_tools_call() -> None:
             "MCP_AUTH_REGISTRATION_ENABLED": "true",
             "MCP_AUTH_CONNECTORS_FILE": str(connector_file),
             "MCP_AUTH_CONNECTOR": "mock",
+            "MCP_AUTH_RESOURCE_CLIENTS_FILE": str(resource_clients_file),
         }
         process = subprocess.Popen(command, cwd=root / "auth-server", env=environment)
         try:

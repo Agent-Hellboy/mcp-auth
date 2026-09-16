@@ -10,6 +10,10 @@ import (
 type KeyProvider interface {
 	Sign(context.Context, string, string, string, []string, time.Duration, string) (string, error)
 	JWKS(context.Context) (map[string]any, error)
+	// Verify checks a token this provider previously signed and returns its
+	// claims, so callers can confirm a bearer value actually originated here
+	// before trusting it (e.g. as a token-exchange subject_token).
+	Verify(context.Context, string) (map[string]any, error)
 }
 
 type LocalKeyProvider struct{ Keys *KeyManager }
@@ -19,3 +23,7 @@ func (p LocalKeyProvider) Sign(_ context.Context, issuer, subject, resource stri
 }
 
 func (p LocalKeyProvider) JWKS(_ context.Context) (map[string]any, error) { return p.Keys.JWKS(), nil }
+
+func (p LocalKeyProvider) Verify(_ context.Context, token string) (map[string]any, error) {
+	return p.Keys.Verify(token)
+}
