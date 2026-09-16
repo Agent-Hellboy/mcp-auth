@@ -188,7 +188,14 @@ connector entry**.
 | --- | --- | --- |
 | Keycloak 26 | verified | Signs RS256. Sets session cookies `SameSite=None`, which forces `Secure`; browsers treat `http://localhost` as a secure context, non-browser test harnesses often do not. |
 | Dex | verified | Signs RS256. `skipApprovalScreen: true` removes a second consent step that is redundant when this server already renders one. |
+| GitLab CE 18 | verified | Signs RS256. Shows its own approval page on first authorization, then answers an already-authorized app with a *200 HTML redirect page* rather than a 302 — so a first run and a repeat run take different shapes. Its sign-in form is server-rendered entirely as `type="hidden"` inputs that Vue fills in, so field names (`user[login]`, `user[password]`) matter and input types do not. OAuth applications require an `organization_id` from GitLab 17 on. |
 | Authelia | not supported on plaintext loopback | Refuses a cookie domain without a period and requires an HTTPS `authelia_url`. An Authelia policy, not a limitation here; it needs a dotted hostname and TLS. |
+
+Each was driven through the same ten checks — dynamic client registration,
+consent, upstream login, `/identity/callback`, token issuance, and an
+authenticated `initialize`, `tools/list` and `tools/call` — twice per provider,
+because several providers behave differently once an authorization is
+remembered.
 
 ### Split public and internal endpoints
 
