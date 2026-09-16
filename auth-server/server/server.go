@@ -83,17 +83,18 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) authorizationMetadata(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                                s.Config.Issuer,
-		"authorization_endpoint":                s.Config.Issuer + "/authorize",
-		"token_endpoint":                        s.Config.Issuer + "/token",
-		"registration_endpoint":                 s.Config.Issuer + "/register",
-		"revocation_endpoint":                   s.Config.Issuer + "/revoke",
-		"jwks_uri":                              s.Config.Issuer + "/.well-known/jwks.json",
-		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange"},
-		"code_challenge_methods_supported":      []string{"S256"},
-		"token_endpoint_auth_methods_supported": []string{"none", "client_secret_basic", "client_secret_post"},
-		"scopes_supported":                      s.Config.AllowedScopes,
+		"issuer":                                         s.Config.Issuer,
+		"authorization_endpoint":                         s.Config.Issuer + "/authorize",
+		"token_endpoint":                                 s.Config.Issuer + "/token",
+		"registration_endpoint":                          s.Config.Issuer + "/register",
+		"revocation_endpoint":                            s.Config.Issuer + "/revoke",
+		"jwks_uri":                                       s.Config.Issuer + "/.well-known/jwks.json",
+		"response_types_supported":                       []string{"code"},
+		"grant_types_supported":                          []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange"},
+		"code_challenge_methods_supported":               []string{"S256"},
+		"token_endpoint_auth_methods_supported":          []string{"none", "client_secret_basic", "client_secret_post"},
+		"scopes_supported":                               s.Config.AllowedScopes,
+		"authorization_response_iss_parameter_supported": s.Config.AuthorizationResponseIssuer,
 	})
 }
 
@@ -155,12 +156,12 @@ func (s *Server) finishConsent(w http.ResponseWriter, r *http.Request, consentID
 	}
 	request := pending.Request
 	if !approved {
-		redirectError(w, r, request, "access_denied", "consent was denied")
+		redirectError(w, r, request, "access_denied", "consent was denied", s.Config.Issuer, s.Config.AuthorizationResponseIssuer)
 		return
 	}
 	identity, err := s.IdentityProvider.Authenticate(r.Context(), IdentityRequest{ClientID: request.ClientID, Nonce: pending.Nonce, Resource: request.Resource, Scopes: request.Scope})
 	if err != nil {
-		redirectError(w, r, request, "access_denied", "identity authentication failed")
+		redirectError(w, r, request, "access_denied", "identity authentication failed", s.Config.Issuer, s.Config.AuthorizationResponseIssuer)
 		return
 	}
 	code := randomID()
@@ -171,6 +172,9 @@ func (s *Server) finishConsent(w http.ResponseWriter, r *http.Request, consentID
 	query.Set("code", code)
 	if request.State != "" {
 		query.Set("state", request.State)
+	}
+	if s.Config.AuthorizationResponseIssuer {
+		query.Set("iss", s.Config.Issuer)
 	}
 	location.RawQuery = query.Encode()
 	http.Redirect(w, r, location.String(), http.StatusFound)
@@ -390,13 +394,16 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 func oauthError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]string{"error": code})
 }
-func redirectError(w http.ResponseWriter, r *http.Request, request AuthorizationRequest, code, description string) {
+func redirectError(w http.ResponseWriter, r *http.Request, request AuthorizationRequest, code, description, issuer string, includeIssuer bool) {
 	location, _ := url.Parse(request.RedirectURI)
 	query := location.Query()
 	query.Set("error", code)
 	query.Set("error_description", description)
 	if request.State != "" {
 		query.Set("state", request.State)
+	}
+	if includeIssuer {
+		query.Set("iss", issuer)
 	}
 	location.RawQuery = query.Encode()
 	http.Redirect(w, r, location.String(), http.StatusFound)

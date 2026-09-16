@@ -16,11 +16,13 @@ class RemoteAuthProvider:
         authorization_servers: list[str],
         base_url: str,
         allowed_client_redirect_uris: list[str] | None = None,
+        scopes_supported: list[str] | None = None,
     ) -> None:
         self.token_verifier = token_verifier
         self.authorization_servers = authorization_servers
         self.base_url = base_url
         self.allowed_client_redirect_uris = allowed_client_redirect_uris
+        self.scopes_supported = scopes_supported
 
     def build(self) -> Any:
         try:
@@ -46,4 +48,6 @@ class RemoteAuthProvider:
         }
         if self.allowed_client_redirect_uris is not None:
             kwargs["allowed_client_redirect_uris"] = self.allowed_client_redirect_uris
+        if self.scopes_supported is not None:
+            kwargs["scopes_supported"] = self.scopes_supported
         return FastMCPRemoteAuthProvider(**kwargs)

@@ -36,6 +36,7 @@ where = ["auth-client/python/src"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+exclude = ["examples/databricks-mcp"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
@@ -48,3 +49,7 @@ packages = ["mcp_auth_client"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "-m 'not e2e'"
+markers = [
+  "e2e: starts the local authorization server and exercises the MCP OAuth flow",
+]

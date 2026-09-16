@@ -26,12 +26,24 @@ class OAuthState:
         return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
 
     def validate_callback(
-        self, returned_state: str | None, returned_nonce: str | None = None
+        self,
+        returned_state: str | None,
+        returned_nonce: str | None = None,
+        returned_issuer: str | None = None,
+        expected_issuer: str | None = None,
+        issuer_parameter_supported: bool = False,
     ) -> None:
         if not returned_state or not secrets.compare_digest(returned_state, self.state):
             raise ValueError("OAuth state mismatch")
         if returned_nonce is not None and not secrets.compare_digest(returned_nonce, self.nonce):
             raise ValueError("OAuth nonce mismatch")
+        if issuer_parameter_supported and not returned_issuer:
+            raise ValueError("OAuth issuer is missing")
+        if returned_issuer is not None:
+            if expected_issuer is None or not secrets.compare_digest(
+                returned_issuer, expected_issuer
+            ):
+                raise ValueError("OAuth issuer mismatch")
 
 
 def authorization_url(

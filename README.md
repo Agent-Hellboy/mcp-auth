@@ -7,7 +7,8 @@ The repository contains:
 - `auth-server/`: a standalone Go OAuth authorization server.
 - `auth-client/python/`: a reusable Python resource-server SDK, including a FastMCP adapter.
 - `auth-client/go/`: a reusable Go resource-server SDK.
-- `examples/databricks-mcp/`: an optional, provider-specific example location; the core does not depend on it.
+- `examples/databricks-mcp/`: an optional Git submodule containing the provider-specific example; the core does not depend on it.
+- `examples/databricks-mcp-integration/`: provider-neutral configuration guidance used by the core tests.
 
 MCP authorization is optional at the protocol level. A particular resource server may still require authorization when it exposes private data or actions.
 
@@ -63,9 +64,17 @@ go test ./auth-server/... ./auth-client/go/...
 go vet ./auth-server/... ./auth-client/go/...
 uv run pip-audit --skip-editable
 python -m build
+docker compose -f deploy/docker-compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e-client
+docker compose -f deploy/docker-compose.e2e.yml down --volumes --remove-orphans
 ```
 
-CI also runs Go vulnerability analysis, Python dependency auditing, a Trivy HIGH/CRITICAL scan of the authorization-server image, and the public-repository secret/artifact audit.
+CI also runs local and three-service Compose MCP OAuth compatibility flows, Go vulnerability analysis, Python dependency auditing, a Trivy HIGH/CRITICAL scan of the authorization-server image, and the public-repository secret/artifact audit.
+
+The compatibility checks cover the shared authorization flow used by the
+2025-06-18 and 2026-07-28 MCP authorization specifications. The server emits
+the newer authorization-response `iss` parameter by default; setting
+`MCP_AUTH_AUTHORIZATION_RESPONSE_ISS=false` preserves the earlier response
+shape for deployments that need it.
 
 ## Security model
 
@@ -79,7 +88,7 @@ CI also runs Go vulnerability analysis, Python dependency auditing, a Trivy HIGH
 
 ## Optional example submodule
 
-The example does not participate in core installation or tests. If the placeholder remote is replaced with a real public repository, initialize it with:
+The example does not participate in core installation or tests. Initialize the public submodule with:
 
 ```bash
 git submodule update --init --recursive
@@ -93,6 +102,10 @@ See [docs/databricks-example.md](docs/databricks-example.md).
 - [Authorization server](docs/auth-server.md)
 - [Auth client SDKs](docs/auth-client.md)
 - [Optional example](docs/databricks-example.md)
+
+## Contributors
+
+- Prince Roshan
 
 ## License
 

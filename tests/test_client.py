@@ -132,3 +132,15 @@ def test_state_nonce_and_pkce_validation() -> None:
         state.validate_callback("wrong", state.nonce)
     with pytest.raises(ValueError, match="nonce"):
         state.validate_callback(state.state, "wrong")
+    state.validate_callback(
+        state.state,
+        returned_issuer="https://auth.example.com",
+        expected_issuer="https://auth.example.com",
+        issuer_parameter_supported=True,
+    )
+    with pytest.raises(ValueError, match="issuer"):
+        state.validate_callback(
+            state.state,
+            expected_issuer="https://auth.example.com",
+            issuer_parameter_supported=True,
+        )

@@ -15,12 +15,14 @@ Provider integrations implement `IdentityProvider` or `TokenExchanger` interface
 3. The client fetches Protected Resource Metadata and selects an authorization server.
 4. The client fetches Authorization Server Metadata.
 5. The client registers, if supported, and opens Authorization Code + PKCE with `resource` set to the canonical MCP resource URI.
-6. The authorization server validates the redirect URI, PKCE challenge, consent, and scope.
+6. The authorization server validates the redirect URI, PKCE challenge, consent, and scope. It can include the RFC 9207 `iss` response parameter for newer MCP clients while remaining compatible with clients that ignore unknown authorization response parameters.
 7. The client redeems the code. The server returns a short-lived JWT access token and a rotating refresh token.
 8. The client sends the access token in the `Authorization` header on every MCP request.
 9. The resource server validates signature, issuer, audience/resource, expiry, and scope using JWKS.
 
 Authorization is optional in MCP. A resource server may require it based on the sensitivity of the data or actions it exposes.
+
+Compatibility follows the shared authorization flow in the [2025-06-18 MCP authorization specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization) and the [2026-07-28 specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization). Newer issuer-response validation is additive, so deployments can support clients from either version.
 
 ## Token boundaries
 

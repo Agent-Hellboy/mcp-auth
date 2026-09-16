@@ -13,11 +13,12 @@ type ProtectedResourceMetadata struct {
 	ScopesSupported      []string `json:"scopes_supported"`
 }
 type AuthorizationServerMetadata struct {
-	Issuer                string `json:"issuer"`
-	AuthorizationEndpoint string `json:"authorization_endpoint"`
-	TokenEndpoint         string `json:"token_endpoint"`
-	JWKSURI               string `json:"jwks_uri"`
-	RegistrationEndpoint  string `json:"registration_endpoint"`
+	Issuer                                     string `json:"issuer"`
+	AuthorizationEndpoint                      string `json:"authorization_endpoint"`
+	TokenEndpoint                              string `json:"token_endpoint"`
+	JWKSURI                                    string `json:"jwks_uri"`
+	RegistrationEndpoint                       string `json:"registration_endpoint"`
+	AuthorizationResponseIssParameterSupported bool   `json:"authorization_response_iss_parameter_supported"`
 }
 
 func DiscoverProtectedResource(client *http.Client, metadataURL string) (ProtectedResourceMetadata, error) {

@@ -67,6 +67,45 @@ jobs:
       - run: uv build
       - run: uv build --project auth-client/python
 
+  e2e:
+    name: MCP authorization E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.13"
+          cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked --extra dev --python 3.12
+      - name: Build authorization server
+        working-directory: auth-server
+        run: go build -trimpath -o "${{ runner.temp }}/mcp-auth-server" ./cmd/auth-server
+      - name: Exercise MCP OAuth discovery, PKCE, and resource flow
+        env:
+          MCP_AUTH_SERVER_BINARY: ${{ runner.temp }}/mcp-auth-server
+        run: uv run pytest tests/e2e -m e2e -q
+
+  compose-e2e:
+    name: Compose MCP authorization E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Run three-service OAuth compatibility flow
+        run: >-
+          docker compose -f deploy/docker-compose.e2e.yml up
+          --build --abort-on-container-exit --exit-code-from e2e-client
+      - name: Tear down E2E services
+        if: always()
+        run: docker compose -f deploy/docker-compose.e2e.yml down --volumes --remove-orphans
+
   public-audit:
     name: Public repository audit
     runs-on: ubuntu-latest

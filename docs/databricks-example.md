@@ -1,12 +1,12 @@
 # Optional Databricks example
 
-The Databricks example is optional and intentionally separate from the core. It is represented by the placeholder submodule entry in `.gitmodules`:
+The Databricks example is optional and intentionally separate from the core. It is available as the public submodule configured in `.gitmodules`:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-Replace the placeholder owner with the public example repository you choose before initialization. The core repository remains installable and testable when the submodule is absent.
+The core repository remains installable and testable when the submodule is absent. The companion provider-neutral fixture is in `examples/databricks-mcp-integration/`.
 
 ## Generic configuration
 
@@ -18,6 +18,19 @@ The example's `.env.example` uses:
 - `DOWNSTREAM_TOKEN_ENDPOINT` and `DOWNSTREAM_AUDIENCE` for optional exchange.
 
 No real URLs, workspace identifiers, credentials, private keys, or deployment values belong in the example.
+
+## Local Compose verification
+
+The repository's Compose E2E job runs the real server from the optional submodule
+alongside the bundled authorization server and the Python SDK client. It verifies
+Protected Resource Metadata, the `401` bearer challenge, authorization-server
+discovery, dynamic client registration, PKCE, consent, JWT validation, and MCP
+initialization for both the earlier and later MCP authorization response shapes.
+
+The Compose environment uses neutral placeholder workspace settings and does not
+call a live Databricks workspace. A real workspace cannot be represented by dummy
+credentials. Live downstream verification must be a separately gated deployment
+using a secret manager, short-lived credentials, and a non-production workspace.
 
 ## Policy
 

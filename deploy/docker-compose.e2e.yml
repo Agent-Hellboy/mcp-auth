@@ -1,0 +1,55 @@
+services:
+  mcp-server:
+    build:
+      context: ..
+      dockerfile: tests/e2e/Dockerfile.databricks-mcp
+    environment:
+      DATABRICKS_HOST: https://workspace.cloud.databricks.com
+      PUBLIC_BASE_URL: http://mcp-server:6328/databricks
+      MCP_SERVER_URL: http://mcp-server:6328/databricks
+      MCP_AUTH_ISSUER: http://mcp-auth:8080
+      MCP_AUTH_JWKS_URI: http://mcp-auth:8080/.well-known/jwks.json
+      MCP_AUTH_TOKEN_ENDPOINT: http://mcp-auth:8080/token
+      MCP_AUTH_CONNECTOR: compose-downstream
+      MCP_AUTH_CLIENT_ID: compose-resource-server
+      MCP_AUTH_CLIENT_PRIVATE_KEY_FILE: /var/lib/mcp-resource-auth/private.pem
+      MCP_AUTH_CLIENT_KEY_ID_FILE: /var/lib/mcp-resource-auth/key_id
+      DATABRICKS_REQUIRED_GROUP: compose-test-group
+      DATABRICKS_ALLOWED_WAREHOUSE_IDS: compose-test-warehouse
+      MCP_METRICS_ENABLED: "false"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:6328/.well-known/oauth-protected-resource/databricks/mcp')
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  mcp-auth:
+    build:
+      context: ../auth-server
+      dockerfile: Dockerfile
+    environment:
+      MCP_AUTH_ISSUER: http://mcp-auth:8080
+      MCP_AUTH_RESOURCE: http://mcp-server:6328/databricks/mcp
+      MCP_AUTH_LISTEN_ADDR: :8080
+      MCP_AUTH_ALLOWED_SCOPES: tools:read
+      MCP_AUTH_LOCAL_DEVELOPMENT: "true"
+      MCP_AUTH_LOCAL_TOKEN_EXCHANGE: "true"
+      MCP_AUTH_REQUIRE_HTTPS: "false"
+      MCP_AUTH_AUTHORIZATION_RESPONSE_ISS: "true"
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+
+  e2e-client:
+    build:
+      context: ..
+      dockerfile: tests/e2e/Dockerfile.e2e-client
+    depends_on:
+      mcp-auth:
+        condition: service_started
+      mcp-server:
+        condition: service_healthy

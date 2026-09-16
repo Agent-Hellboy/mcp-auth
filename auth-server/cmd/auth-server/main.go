@@ -15,6 +15,13 @@ func main() {
 		slog.Error("server initialization failed", "error", err)
 		os.Exit(1)
 	}
+	if config.LocalDevelopment && config.LocalTokenExchange {
+		authServer.TokenExchanger = server.LocalTokenExchanger{
+			Issuer:      config.Issuer,
+			KeyProvider: authServer.KeyProvider,
+			TTL:         config.AccessTokenTTL,
+		}
+	}
 	slog.Info("mcp auth server listening", "addr", config.ListenAddr, "issuer", config.Issuer)
 	if err := http.ListenAndServe(config.ListenAddr, authServer.Handler()); err != nil {
 		slog.Error("server stopped", "error", err)

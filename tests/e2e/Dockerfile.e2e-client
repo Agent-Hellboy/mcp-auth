@@ -1,0 +1,8 @@
+FROM python:3.12-slim
+
+WORKDIR /workspace
+COPY auth-client/python /workspace/auth-client/python
+COPY tests/e2e/compose_client.py /workspace/tests/e2e/compose_client.py
+RUN pip install --no-cache-dir /workspace/auth-client/python
+
+CMD ["python", "tests/e2e/compose_client.py"]
