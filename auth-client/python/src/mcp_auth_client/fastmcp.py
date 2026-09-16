@@ -52,8 +52,12 @@ class RemoteAuthProvider:
             "authorization_servers": self.authorization_servers,
             "base_url": self.base_url,
         }
+        provider_signature = inspect.signature(FastMCPRemoteAuthProvider)
         if self.allowed_client_redirect_uris is not None:
             kwargs["allowed_client_redirect_uris"] = self.allowed_client_redirect_uris
-        if self.scopes_supported is not None:
+        if (
+            self.scopes_supported is not None
+            and "scopes_supported" in provider_signature.parameters
+        ):
             kwargs["scopes_supported"] = self.scopes_supported
         return FastMCPRemoteAuthProvider(**kwargs)

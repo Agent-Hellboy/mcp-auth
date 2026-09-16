@@ -36,7 +36,10 @@ docker compose -f deploy/docker-compose.e2e.yml up --build --abort-on-container-
 docker compose -f deploy/docker-compose.e2e.yml down --volumes --remove-orphans
 ```
 
-CI also runs local and production-mode Compose MCP OAuth compatibility flows with a mock OIDC issuer, Go vulnerability analysis, Python dependency auditing, a Trivy HIGH/CRITICAL scan of the authorization-server image, and the public-repository secret/artifact audit.
+CI also runs Compose MCP OAuth compatibility with Keycloak and the in-tree
+demo resource server, Go vulnerability analysis, Python dependency auditing, a
+Trivy HIGH/CRITICAL scan of the authorization-server image, and the
+public-repository secret/artifact audit.
 
 The compatibility checks cover the shared authorization flow used by the
 2025-06-18 and 2026-07-28 MCP authorization specifications. The server emits

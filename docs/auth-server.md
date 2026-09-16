@@ -370,19 +370,19 @@ of it changes. For example, with Caddy routing by hostname:
 ```mermaid
 flowchart LR
     proxy["Shared HTTPS reverse proxy"]
-    authA["auth-server :8081<br/>connector=databricks<br/>resource=/databricks/mcp"]
+    authA["auth-server :8081<br/>connector=inventory<br/>resource=/inventory/mcp"]
     authB["auth-server :8082<br/>connector=internal-api<br/>resource=/internal-api/mcp"]
     dbA[("State and keys A")]
     dbB[("State and keys B")]
 
-    proxy -->|"databricks-auth.example.com"| authA
+    proxy -->|"inventory-auth.example.com"| authA
     proxy -->|"internal-api-auth.example.com"| authB
     authA --> dbA
     authB --> dbB
 ```
 
 ```caddyfile
-databricks-auth.example.com {
+inventory-auth.example.com {
     reverse_proxy 127.0.0.1:8081
 }
 
@@ -394,9 +394,9 @@ internal-api-auth.example.com {
 Each backend is a separate `auth-server` process, e.g.:
 
 ```bash
-MCP_AUTH_ISSUER=https://databricks-auth.example.com \
-MCP_AUTH_RESOURCE=https://mcp.example.com/databricks/mcp \
-MCP_AUTH_CONNECTOR=databricks \
+MCP_AUTH_ISSUER=https://inventory-auth.example.com \
+MCP_AUTH_RESOURCE=https://mcp.example.com/inventory/mcp \
+MCP_AUTH_CONNECTOR=inventory \
 MCP_AUTH_LISTEN_ADDR=127.0.0.1:8081 \
 go run ./auth-server/cmd/auth-server &
 

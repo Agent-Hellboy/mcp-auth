@@ -1,13 +1,12 @@
 from pathlib import Path
 
 
-def test_optional_example_is_provider_neutral() -> None:
+def test_demo_example_stays_in_tree_and_provider_neutral() -> None:
     root = Path(__file__).parents[1]
-    readme = (root / "examples/databricks-mcp-integration/README.md").read_text()
-    env = (root / "examples/databricks-mcp-integration/.env.example").read_text()
-    assert "company" not in readme.lower()
-    assert "<owner>" not in env
-    assert "DOWNSTREAM_AUDIENCE" in env
-    assert (
-        "https://github.com/Agent-Hellboy/databrics-mcp.git" in (root / ".gitmodules").read_text()
-    )
+    readme = (root / "examples/demo-mcp/README.md").read_text()
+    server = (root / "examples/demo-mcp/server.py").read_text()
+    assert "databricks" not in readme.lower()
+    assert "databricks" not in server.lower()
+    assert "whoami" in server
+    assert not (root / ".gitmodules").exists()
+    assert not (root / "examples/databricks-mcp").exists()

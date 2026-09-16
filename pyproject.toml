@@ -36,7 +36,6 @@ where = ["auth-client/python/src"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-exclude = ["examples/databricks-mcp"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]

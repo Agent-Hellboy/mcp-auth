@@ -341,7 +341,7 @@ func TestLoadResourceClientsValidatesPublicKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	publicPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
-	valid := fmt.Sprintf(`[{"client_id":"resource-server","name":"databricks-mcp","public_key_pem":%q}]`, string(publicPEM))
+	valid := fmt.Sprintf(`[{"client_id":"resource-server","name":"demo-mcp","public_key_pem":%q}]`, string(publicPEM))
 	if err := os.WriteFile(path, []byte(valid), 0600); err != nil {
 		t.Fatal(err)
 	}

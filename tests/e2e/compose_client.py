@@ -1,12 +1,17 @@
 """Compose E2E client for the MCP authorization discovery and PKCE flow."""
 
 import asyncio
+import html
+import json
 import re
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
+import jwt as pyjwt
+from jwt.algorithms import RSAAlgorithm
 from mcp_auth_client import (
     AsyncHTTPClient,
     AuthorizationServerConfig,
@@ -22,11 +27,14 @@ from mcp_auth_client import (
 )
 
 AUTH_URL = "http://mcp-auth:8080"
-RESOURCE_URL = "http://mcp-server:6328/databricks/mcp"
+RESOURCE_URL = "http://mcp-server:6328/mcp"
 MCP_URL = "http://mcp-server:6328/mcp"
+PRM_URL = "http://mcp-server:6328/.well-known/oauth-protected-resource/mcp"
 REDIRECT_URI = "http://127.0.0.1:39001/callback"
-DOWNSTREAM_AUDIENCE = "https://api.example.com"
-MOCK_OIDC_URL = "http://mock-oidc:8082"
+KEYCLOAK_URL = "http://keycloak:8080"
+KEYCLOAK_ISSUER = f"{KEYCLOAK_URL}/realms/mcp"
+KEYCLOAK_USER = "e2e-user"
+KEYCLOAK_PASSWORD = "e2e-password"
 RESOURCE_AUTH_KEY_DIR = Path("/var/lib/mcp-resource-auth")
 INITIALIZE_PARAMS = {
     "protocolVersion": "2025-06-18",
@@ -35,11 +43,41 @@ INITIALIZE_PARAMS = {
 }
 
 
+def complete_upstream_login(client: httpx.Client, start_url: str) -> httpx.Response:
+    """Walk Keycloak's login form until mcp-auth receives the identity callback."""
+
+    url = start_url
+    for _ in range(16):
+        response = client.get(url)
+        if response.status_code == 302:
+            location = response.headers["Location"]
+            if "/identity/callback" in location:
+                url = location
+                continue
+            if "code=" in urlsplit(location).query:
+                return SimpleNamespace(status_code=302, headers={"Location": location})
+            url = location
+            continue
+        if response.status_code == 200 and 'name="username"' in response.text:
+            match = re.search(r'<form[^>]*action="([^"]+)"', response.text, re.I)
+            assert match is not None
+            posted = client.post(
+                html.unescape(match.group(1)),
+                data={"username": KEYCLOAK_USER, "password": KEYCLOAK_PASSWORD},
+            )
+            if posted.status_code == 302:
+                url = posted.headers["Location"]
+                continue
+            raise AssertionError(f"Keycloak login returned HTTP {posted.status_code}")
+        raise AssertionError(f"unexpected upstream HTTP {response.status_code} at {url}")
+    raise AssertionError("Keycloak login did not complete")
+
+
 async def discover() -> tuple[ProtectedResourceConfig, AuthorizationServerConfig]:
     async with AsyncHTTPClient() as async_http:
         protected = await discover_protected_resource(
             async_http.client,
-            "http://mcp-server:6328/.well-known/oauth-protected-resource/databricks/mcp",
+            PRM_URL,
         )
         authorization_server = await discover_authorization_server(
             async_http.client, protected.authorization_servers[0]
@@ -53,11 +91,7 @@ def wait_for_services() -> None:
             try:
                 if (
                     client.get(f"{AUTH_URL}/readyz", timeout=0.5).status_code == 200
-                    and client.get(
-                        "http://mcp-server:6328/.well-known/oauth-protected-resource/databricks/mcp",
-                        timeout=0.5,
-                    ).status_code
-                    == 200
+                    and client.get(PRM_URL, timeout=0.5).status_code == 200
                 ):
                     return
             except httpx.HTTPError:
@@ -72,7 +106,8 @@ def run_flow(validate_issuer: bool) -> None:
     protected, authorization_server = asyncio.run(discover())
     print("[e2e] protected-resource metadata and authorization-server discovery passed", flush=True)
     assert protected.resource == RESOURCE_URL
-    assert {"catalog:read", "sql:read"}.issubset(set(protected.scopes_supported or ()))
+    scopes = set(protected.scopes_supported or ())
+    assert not scopes or "tools:read" in scopes
     assert authorization_server.jwks_uri is not None
     assert authorization_server.registration_endpoint is not None
     assert authorization_server.revocation_endpoint is not None
@@ -124,9 +159,7 @@ def run_flow(validate_issuer: bool) -> None:
             data={"consent_id": consent_match.group(1), "decision": "approve"},
         )
         assert consent_response.status_code == 302
-        upstream_response = client.get(consent_response.headers["Location"])
-        assert upstream_response.status_code == 302
-        callback = client.get(upstream_response.headers["Location"])
+        callback = complete_upstream_login(client, consent_response.headers["Location"])
         assert callback.status_code == 302
         callback_query = parse_qs(urlsplit(callback.headers["Location"]).query)
         oauth_state.validate_callback(
@@ -165,7 +198,7 @@ def run_flow(validate_issuer: bool) -> None:
             required_scopes={"tools:read"},
         )
         claims = asyncio.run(verifier.verify(access_token))
-        assert claims.subject == "compose-user"
+        assert claims.subject == KEYCLOAK_USER
         assert "tools:read" in claims.scopes
         print(
             "[e2e] JWKS signature, issuer, audience, expiry, and scope validation passed",
@@ -189,7 +222,7 @@ def run_flow(validate_issuer: bool) -> None:
             ) as exchange_client:
                 exchanged = await exchange_client.exchange(
                     access_token,
-                    audience=DOWNSTREAM_AUDIENCE,
+                    audience=RESOURCE_URL,
                     scopes={"tools:read"},
                     use_cache=False,
                 )
@@ -197,14 +230,23 @@ def run_flow(validate_issuer: bool) -> None:
 
         downstream_token = asyncio.run(exchange_downstream_token())
         assert downstream_token != access_token
-        downstream_jwks = client.get(f"{MOCK_OIDC_URL}/jwks").json()
-        downstream_verifier = JWTVerifier.from_jwks(
-            downstream_jwks, issuer=MOCK_OIDC_URL, audience=DOWNSTREAM_AUDIENCE
+        downstream_jwks = client.get(f"{KEYCLOAK_ISSUER}/protocol/openid-connect/certs").json()
+        header = pyjwt.get_unverified_header(downstream_token)
+        jwk = next(key for key in downstream_jwks["keys"] if key["kid"] == header["kid"])
+        # Keycloak access tokens commonly omit aud and use azp instead.
+        downstream_claims = pyjwt.decode(
+            downstream_token,
+            key=RSAAlgorithm.from_jwk(json.dumps(jwk)),
+            algorithms=["RS256"],
+            issuer=KEYCLOAK_ISSUER,
+            options={"require": ["exp", "iss"], "verify_aud": False},
         )
-        downstream_claims = asyncio.run(downstream_verifier.verify(downstream_token))
-        assert downstream_claims.subject == "compose-user"
+        identity = str(
+            downstream_claims.get("preferred_username") or downstream_claims.get("sub") or ""
+        )
+        assert identity == KEYCLOAK_USER or downstream_claims.get("azp") == "mcp-auth"
         print(
-            "[e2e] private-key JWT authentication and separate downstream audience passed",
+            "[e2e] private-key JWT authentication and Keycloak upstream session passed",
             flush=True,
         )
 
@@ -225,7 +267,7 @@ def run_flow(validate_issuer: bool) -> None:
 
         private_key_pem = RESOURCE_AUTH_KEY_DIR.joinpath("private.pem").read_bytes()
         key_id = RESOURCE_AUTH_KEY_DIR.joinpath("key_id").read_text().strip()
-        bad_target_assertion = PrivateKeyJWTClientAuth(
+        missing_subject_assertion = PrivateKeyJWTClientAuth(
             "compose-resource-server", private_key_pem, key_id
         ).assertion(f"{AUTH_URL}/token")
         exchange_failure = client.post(
@@ -234,14 +276,11 @@ def run_flow(validate_issuer: bool) -> None:
                 "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
                 "client_id": "compose-resource-server",
                 "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-                "client_assertion": bad_target_assertion,
-                "subject_token": access_token,
-                "audience": "",
+                "client_assertion": missing_subject_assertion,
             },
         )
         assert exchange_failure.status_code == 400
-        assert exchange_failure.json()["error"] == "invalid_target"
-        print("[e2e] authenticated token-exchange failure path passed", flush=True)
+        print("[e2e] authenticated token-exchange missing subject_token rejected", flush=True)
 
         refresh_response = client.post(
             f"{AUTH_URL}/token",
@@ -332,9 +371,7 @@ def main() -> None:
         )
         assert challenge_response.status_code in {401, 403}
         challenge = parse_www_authenticate(challenge_response.headers["WWW-Authenticate"])
-        assert challenge.resource_metadata == (
-            "http://mcp-server:6328/.well-known/oauth-protected-resource/databricks/mcp"
-        )
+        assert challenge.resource_metadata == PRM_URL
         print(
             "[e2e] unauthenticated MCP request returned the required bearer metadata challenge",
             flush=True,

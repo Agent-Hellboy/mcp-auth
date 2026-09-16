@@ -72,11 +72,12 @@ Import `github.com/example/mcp-auth/auth-client/go/mcpauth`, configure `JWTVerif
 
 Resource servers should publish Protected Resource Metadata with `authorization_servers`. Clients then fetch `/.well-known/oauth-authorization-server` from the selected issuer. The SDK metadata dataclasses and structs accept provider-neutral endpoints, optional DCR, optional revocation, and provider-specific scope sets without changing MCP tools.
 
-The repository includes a Docker Compose E2E flow with the real resource-server
-submodule, deployable `mcp-auth`, a mock OIDC issuer, a runtime key helper, and
-an SDK client. It covers both MCP authorization response variants, consent,
-PKCE, JWT/JWKS validation, token exchange and audience separation, refresh
-rotation, revocation, invalid-token rejection, and MCP initialization. Run it with:
+The repository includes a Docker Compose E2E flow with the in-tree dummy
+resource server, deployable `mcp-auth`, Keycloak as the identity provider, a
+runtime key helper, and an SDK client. It covers both MCP authorization response
+variants, consent, Keycloak login, PKCE, JWT/JWKS validation, upstream-session
+token exchange, refresh rotation, revocation, invalid-token rejection, and MCP
+initialization. Run it with:
 
 ```bash
 docker compose -f deploy/docker-compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e-client

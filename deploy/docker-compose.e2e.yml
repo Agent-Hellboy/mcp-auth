@@ -1,17 +1,27 @@
 services:
-  mock-oidc:
-    build:
-      context: ..
-      dockerfile: tests/e2e/Dockerfile.mock-oidc
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    command:
+      - start-dev
+      - --import-realm
+      - --http-enabled=true
+      - --hostname-strict=false
+      - --hostname=http://keycloak:8080
+      - --http-port=8080
+      - --health-enabled=true
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    volumes:
+      - ../tests/e2e/keycloak/realm.json:/opt/keycloak/data/import/realm.json:ro
     healthcheck:
       test:
-        - CMD
-        - python
-        - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/healthz')
-      interval: 2s
-      timeout: 2s
-      retries: 15
+        - CMD-SHELL
+        - "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /realms/mcp HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && timeout 2 cat <&3 | grep -q mcp"
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
 
   mcp-auth-keygen:
     image: alpine:3.22
@@ -28,23 +38,15 @@ services:
       timeout: 2s
       retries: 15
 
-  # Generates the resource server's (databricks-mcp) private_key_jwt key pair
-  # once, out of band, so its public half can be registered with mcp-auth
-  # ahead of time. This mirrors real deployment: the auth server must know a
-  # resource server's public key before it can verify that resource server's
-  # token-exchange requests.
   resource-keygen:
     image: alpine:3.22
-    # Mounted at the same path every consumer uses (/var/lib/mcp-resource-auth),
-    # since resource-clients.json embeds an absolute public_key_file path that
-    # mcp-auth reads from its own container's filesystem, not this one's.
     command: >-
       sh -c "apk add --no-cache openssl >/dev/null &&
       chmod 0777 /var/lib/mcp-resource-auth &&
       openssl genrsa -out /var/lib/mcp-resource-auth/private.pem 2048 &&
       openssl rsa -in /var/lib/mcp-resource-auth/private.pem -pubout -out /var/lib/mcp-resource-auth/public.pem &&
-      printf '%s\n' compose-e2e-key > /var/lib/mcp-resource-auth/key_id &&
-      printf '%s' '[{\"client_id\":\"compose-resource-server\",\"name\":\"databricks-mcp e2e\",\"public_key_file\":\"/var/lib/mcp-resource-auth/public.pem\"}]' > /var/lib/mcp-resource-auth/resource-clients.json &&
+      printf '%s\\n' compose-e2e-key > /var/lib/mcp-resource-auth/key_id &&
+      printf '%s' '[{\"client_id\":\"compose-resource-server\",\"name\":\"demo-mcp e2e\",\"public_key_file\":\"/var/lib/mcp-resource-auth/public.pem\"}]' > /var/lib/mcp-resource-auth/resource-clients.json &&
       chmod 0644 /var/lib/mcp-resource-auth/private.pem /var/lib/mcp-resource-auth/public.pem /var/lib/mcp-resource-auth/key_id /var/lib/mcp-resource-auth/resource-clients.json &&
       sleep infinity"
     volumes:
@@ -58,21 +60,15 @@ services:
   mcp-server:
     build:
       context: ..
-      dockerfile: tests/e2e/Dockerfile.databricks-mcp
+      dockerfile: tests/e2e/Dockerfile.demo-mcp
     environment:
-      DATABRICKS_HOST: https://workspace.cloud.databricks.com
-      PUBLIC_BASE_URL: http://mcp-server:6328/databricks
-      MCP_SERVER_URL: http://mcp-server:6328/databricks
+      PUBLIC_BASE_URL: http://mcp-server:6328
+      MCP_SERVER_URL: http://mcp-server:6328
+      MCP_PATH: /mcp
+      MCP_PORT: "6328"
       MCP_AUTH_ISSUER: http://mcp-auth:8080
       MCP_AUTH_JWKS_URI: http://mcp-auth:8080/.well-known/jwks.json
-      MCP_AUTH_TOKEN_ENDPOINT: http://mcp-auth:8080/token
-      MCP_AUTH_CONNECTOR: compose-downstream
-      MCP_AUTH_CLIENT_ID: compose-resource-server
-      MCP_AUTH_CLIENT_PRIVATE_KEY_FILE: /var/lib/mcp-resource-auth/private.pem
-      MCP_AUTH_CLIENT_KEY_ID_FILE: /var/lib/mcp-resource-auth/key_id
-      DATABRICKS_REQUIRED_GROUP: compose-test-group
-      DATABRICKS_ALLOWED_WAREHOUSE_IDS: compose-test-warehouse
-      MCP_METRICS_ENABLED: "false"
+      MCP_ALLOWED_HOSTS: mcp-server,mcp-server:6328,localhost,127.0.0.1
     volumes:
       - resource-auth-keys:/var/lib/mcp-resource-auth:ro
     depends_on:
@@ -83,10 +79,10 @@ services:
         - CMD
         - python
         - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:6328/.well-known/oauth-protected-resource/databricks/mcp')
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:6328/.well-known/oauth-protected-resource/mcp')
       interval: 2s
       timeout: 2s
-      retries: 15
+      retries: 20
 
   mcp-auth:
     build:
@@ -94,7 +90,7 @@ services:
       dockerfile: Dockerfile
     environment:
       MCP_AUTH_ISSUER: http://mcp-auth:8080
-      MCP_AUTH_RESOURCE: http://mcp-server:6328/databricks/mcp
+      MCP_AUTH_RESOURCE: http://mcp-server:6328/mcp
       MCP_AUTH_LISTEN_ADDR: :8080
       MCP_AUTH_ALLOWED_SCOPES: tools:read
       MCP_AUTH_REQUIRE_HTTPS: "false"
@@ -107,15 +103,16 @@ services:
       MCP_AUTH_CONNECTOR: compose-oidc
       MCP_AUTH_ALLOW_INSECURE_CONNECTORS: "true"
       MCP_AUTH_RESOURCE_CLIENTS_FILE: /var/lib/mcp-resource-auth/resource-clients.json
+      KEYCLOAK_CLIENT_SECRET: e2e-client-secret
     volumes:
       - mcp-auth-keys:/keys:ro
       - mcp-auth-data:/data
-      - ../tests/e2e/mock-oidc-connectors.json:/etc/mcp-auth/connectors.json:ro
+      - ../tests/e2e/keycloak-connectors.json:/etc/mcp-auth/connectors.json:ro
       - resource-auth-keys:/var/lib/mcp-resource-auth:ro
     depends_on:
       mcp-server:
         condition: service_healthy
-      mock-oidc:
+      keycloak:
         condition: service_healthy
       mcp-auth-keygen:
         condition: service_healthy
@@ -132,6 +129,8 @@ services:
       mcp-auth:
         condition: service_started
       mcp-server:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
       resource-keygen:
         condition: service_healthy

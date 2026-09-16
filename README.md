@@ -43,7 +43,7 @@ downstream credential through token exchange or the connector's upstream session
 - **Deploy the authorization server:** [Authorization server](docs/auth-server.md)
 - **Protect an MCP resource server:** [Auth client SDKs](docs/auth-client.md)
 - **Understand the complete protocol flow:** [Architecture](docs/architecture.md)
-- **Run an end-to-end example:** [Optional Databricks example](docs/databricks-example.md)
+- **Run an end-to-end example:** [Demo MCP + Keycloak](docs/demo-example.md)
 - **Contribute or run tests:** [Local development](docs/development.md)
 
 The repository contains:
@@ -51,8 +51,7 @@ The repository contains:
 - `auth-server/`: a standalone Go OAuth authorization server.
 - `auth-client/python/`: a reusable Python resource-server SDK, including a FastMCP adapter.
 - `auth-client/go/`: a reusable Go resource-server SDK.
-- `examples/databricks-mcp/`: an optional Git submodule containing the provider-specific example; the core does not depend on it.
-- `examples/databricks-mcp-integration/`: provider-neutral configuration guidance used by the core tests.
+- `examples/demo-mcp/`: a dummy FastMCP resource server used by Compose E2E.
 
 MCP authorization is optional at the protocol level. A resource server may still
 require it when it exposes private data or actions.
@@ -107,22 +106,17 @@ endpoints and environment-variable names for secrets, never secret values.
 - Tokens are redacted from structured audit logs.
 - Production deployments must use HTTPS, a persistent key provider, durable storage, restrictive CORS/trusted origins, and an upstream identity provider connector appropriate to the deployment.
 
-## Optional example submodule
+## Demo resource server
 
-The example does not participate in core installation or tests. Initialize the public submodule with:
-
-```bash
-git submodule update --init --recursive
-```
-
-See [docs/databricks-example.md](docs/databricks-example.md).
+`examples/demo-mcp` is a dummy MCP server. Compose E2E runs it with Keycloak as
+the identity provider. See [docs/demo-example.md](docs/demo-example.md).
 
 ## Documentation
 
 - [Architecture](docs/architecture.md)
 - [Authorization server](docs/auth-server.md)
 - [Auth client SDKs](docs/auth-client.md)
-- [Optional example](docs/databricks-example.md)
+- [Demo MCP + Keycloak](docs/demo-example.md)
 - [Local development](docs/development.md)
 
 ## Contributors
