@@ -50,19 +50,23 @@ func NewServerWithKeyProvider(config Config, store Store, identityProvider Ident
 		store = NewMemoryStore()
 	}
 	if identityProvider == nil {
+		if !config.LocalDevelopment {
+			return nil, errors.New("identity provider is required outside local development")
+		}
 		identityProvider = LocalIdentityProvider{Subject: config.LocalSubject}
 	}
 	if auditWriter == nil {
 		auditWriter = io.Discard
 	}
-	keys, err := NewKeyManager(config.PrivateKeyFile)
-	if err != nil {
-		return nil, err
-	}
 	if keyProvider == nil {
+		keys, err := NewKeyManager(config.PrivateKeyFile)
+		if err != nil {
+			return nil, err
+		}
 		keyProvider = LocalKeyProvider{Keys: keys}
+		return &Server{Config: config, Store: store, Keys: keys, KeyProvider: keyProvider, IdentityProvider: identityProvider, TokenExchanger: exchanger, Audit: NewAuditLogger(auditWriter), now: time.Now}, nil
 	}
-	return &Server{Config: config, Store: store, Keys: keys, KeyProvider: keyProvider, IdentityProvider: identityProvider, TokenExchanger: exchanger, Audit: NewAuditLogger(auditWriter), now: time.Now}, nil
+	return &Server{Config: config, Store: store, KeyProvider: keyProvider, IdentityProvider: identityProvider, TokenExchanger: exchanger, Audit: NewAuditLogger(auditWriter), now: time.Now}, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -74,6 +78,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /authorize", s.authorize)
+	mux.HandleFunc("GET /identity/callback", s.identityCallback)
 	mux.HandleFunc("POST /authorize/consent", s.consent)
 	mux.HandleFunc("POST /token", s.token)
 	mux.HandleFunc("POST /register", s.register)
@@ -159,13 +164,70 @@ func (s *Server) finishConsent(w http.ResponseWriter, r *http.Request, consentID
 		redirectError(w, r, request, "access_denied", "consent was denied", s.Config.Issuer, s.Config.AuthorizationResponseIssuer)
 		return
 	}
+	if interactive, ok := s.IdentityProvider.(InteractiveIdentityProvider); ok {
+		upstreamState := randomID()
+		if err := s.Store.SaveConsentRequest(ConsentRequest{
+			ValueHash: HashSecret(upstreamState), Request: request, Nonce: pending.Nonce,
+			ExpiresAt: s.now().Add(s.Config.AuthorizationCodeTTL),
+		}); err != nil {
+			oauthError(w, http.StatusInternalServerError, "server_error")
+			return
+		}
+		location, err := interactive.Begin(r.Context(), IdentityRequest{
+			ClientID: request.ClientID, Nonce: pending.Nonce, Resource: request.Resource, Scopes: request.Scope,
+		}, upstreamState)
+		if err != nil {
+			oauthError(w, http.StatusInternalServerError, "server_error")
+			return
+		}
+		http.Redirect(w, r, location, http.StatusFound)
+		return
+	}
 	identity, err := s.IdentityProvider.Authenticate(r.Context(), IdentityRequest{ClientID: request.ClientID, Nonce: pending.Nonce, Resource: request.Resource, Scopes: request.Scope})
 	if err != nil {
 		redirectError(w, r, request, "access_denied", "identity authentication failed", s.Config.Issuer, s.Config.AuthorizationResponseIssuer)
 		return
 	}
+	s.completeAuthorization(w, r, pending, identity)
+}
+
+func (s *Server) identityCallback(w http.ResponseWriter, r *http.Request) {
+	interactive, ok := s.IdentityProvider.(InteractiveIdentityProvider)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	state := r.URL.Query().Get("state")
+	pending, err := s.Store.ConsumeConsentRequest(state, s.now())
+	if err != nil {
+		http.Error(w, "identity state is invalid or expired", http.StatusBadRequest)
+		return
+	}
+	if upstreamError := r.URL.Query().Get("error"); upstreamError != "" {
+		redirectError(w, r, pending.Request, "access_denied", "upstream identity authentication failed", s.Config.Issuer, s.Config.AuthorizationResponseIssuer)
+		return
+	}
+	identity, err := interactive.Complete(r.Context(), IdentityCallback{
+		Code: r.URL.Query().Get("code"), RedirectURI: strings.TrimRight(s.Config.Issuer, "/") + "/identity/callback", Nonce: pending.Nonce, State: state,
+	})
+	if err != nil {
+		redirectError(w, r, pending.Request, "access_denied", "upstream identity authentication failed", s.Config.Issuer, s.Config.AuthorizationResponseIssuer)
+		return
+	}
+	s.completeAuthorization(w, r, pending, identity)
+}
+
+func (s *Server) completeAuthorization(w http.ResponseWriter, r *http.Request, pending ConsentRequest, identity Identity) {
+	request := pending.Request
 	code := randomID()
-	_ = s.Store.SaveAuthorizationCode(AuthorizationCode{ValueHash: HashSecret(code), ClientID: request.ClientID, RedirectURI: request.RedirectURI, CodeChallenge: request.CodeChallenge, Scope: request.Scope, Resource: request.Resource, Subject: identity.Subject, Nonce: pending.Nonce, ExpiresAt: s.now().Add(s.Config.AuthorizationCodeTTL)})
+	if err := s.Store.SaveAuthorizationCode(AuthorizationCode{
+		ValueHash: HashSecret(code), ClientID: request.ClientID, RedirectURI: request.RedirectURI,
+		CodeChallenge: request.CodeChallenge, Scope: request.Scope, Resource: request.Resource,
+		Subject: identity.Subject, Nonce: pending.Nonce, ExpiresAt: s.now().Add(s.Config.AuthorizationCodeTTL),
+	}); err != nil {
+		oauthError(w, http.StatusInternalServerError, "server_error")
+		return
+	}
 	s.Audit.Event("authorization_code_issued", "success", map[string]any{"client_id": request.ClientID, "subject": identity.Subject})
 	location, _ := url.Parse(request.RedirectURI)
 	query := location.Query()

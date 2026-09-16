@@ -19,6 +19,11 @@ The example's `.env.example` uses:
 
 No real URLs, workspace identifiers, credentials, private keys, or deployment values belong in the example.
 
+The external example currently imports the SDK through its historical module
+name; the E2E image provides a compatibility alias to the installed
+`mcp_auth_client` package. New integrations should import the public package
+directly. The core repository no longer carries a separate SDK shim.
+
 ## Local Compose verification
 
 The repository's Compose E2E job runs the real server from the optional submodule
@@ -31,6 +36,15 @@ The Compose environment uses neutral placeholder workspace settings and does not
 call a live Databricks workspace. A real workspace cannot be represented by dummy
 credentials. Live downstream verification must be a separately gated deployment
 using a secret manager, short-lived credentials, and a non-production workspace.
+
+The Compose file uses an explicit configurable subnet to avoid Docker address-pool
+exhaustion on hosts with many existing networks. Override it when necessary:
+
+```bash
+MCP_AUTH_E2E_SUBNET=172.31.240.0/24 \
+MCP_AUTH_E2E_NETWORK=mcp-auth-e2e-alt \
+docker compose -f deploy/docker-compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e-client
+```
 
 ## Policy
 

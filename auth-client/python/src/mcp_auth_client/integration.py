@@ -1,19 +1,24 @@
-"""Small E2E compatibility adapter for the Databricks example's SDK boundary."""
+"""Small provider-neutral integration helpers for MCP resource servers."""
 
+import os
 from dataclasses import dataclass
 
-from mcp_auth_client import (
-    JWTVerifier,
-    PrivateKeyJWTClientAuth,
-    RemoteAuthProvider,
-)
-from mcp_auth_client import (
-    TokenExchangeClient as SDKTokenExchangeClient,
-)
+from .fastmcp import RemoteAuthProvider
+from .token_exchange import PrivateKeyJWTClientAuth, TokenExchangeClient
+from .verifier import JWTVerifier
 
 
 class TokenExchangeError(RuntimeError):
-    """Raised when the configured downstream exchange cannot complete."""
+    """Raised when a downstream provider exchange cannot complete."""
+
+    def __init__(
+        self, error: str, description: str | None = None, status_code: int | None = None
+    ) -> None:
+        self.error = error
+        self.description = description
+        self.status_code = status_code
+        message = error if description is None else f"{error}: {description}"
+        super().__init__(message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,8 +26,8 @@ class ExchangedToken:
     access_token: str
 
 
-class TokenExchangeClient:
-    def __init__(self, client: SDKTokenExchangeClient, audience: str) -> None:
+class _ExchangeAdapter:
+    def __init__(self, client: TokenExchangeClient, audience: str) -> None:
         self._client = client
         self._audience = audience
         self._entered = False
@@ -34,7 +39,8 @@ class TokenExchangeClient:
                 self._entered = True
             token = await self._client.exchange(subject_token, audience=self._audience)
         except Exception as exc:
-            raise TokenExchangeError("downstream token exchange failed") from exc
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            raise TokenExchangeError("downstream_exchange_failed", status_code=status_code) from exc
         return ExchangedToken(token.access_token)
 
     async def aclose(self) -> None:
@@ -47,37 +53,41 @@ def build_exchange_client(
     token_endpoint: str,
     audience: str,
     client_id: str,
-    private_key: bytes,
+    private_key: str | bytes,
     key_id: str,
-) -> TokenExchangeClient:
-    client_auth = PrivateKeyJWTClientAuth(client_id, private_key, key_id)
-    client = SDKTokenExchangeClient(token_endpoint, client_auth=client_auth)
-    return TokenExchangeClient(client, audience)
+) -> _ExchangeAdapter:
+    """Build a lazy RFC 8693 client for a separate downstream audience."""
+
+    auth = PrivateKeyJWTClientAuth(client_id, private_key, key_id)
+    return _ExchangeAdapter(TokenExchangeClient(token_endpoint, client_auth=auth), audience)
 
 
 def build_remote_auth(
     resource_url: str,
     issuer: str,
     jwks_uri: str,
-    scopes_supported: list[str],
+    scopes_supported: list[str] | None = None,
     ssrf_safe: bool = True,
 ) -> object:
-    del ssrf_safe
+    """Build the optional FastMCP adapter with an explicit JWKS fetch policy."""
+
     verifier = JWTVerifier(
         jwks_uri=jwks_uri,
         issuer=issuer,
         audience=resource_url.rstrip("/") + "/mcp",
+        ssrf_safe=ssrf_safe,
     )
     return RemoteAuthProvider(
         token_verifier=verifier,
         authorization_servers=[issuer],
         base_url=resource_url,
         scopes_supported=scopes_supported,
+        ssrf_safe=ssrf_safe,
     ).build()
 
 
-def public_base_url(env_keys: tuple[str, ...]) -> str:
-    import os
+def public_base_url(env_keys: tuple[str, ...] = ("PUBLIC_BASE_URL", "MCP_SERVER_URL")) -> str:
+    """Return a configured public URL, without embedding deployment knowledge."""
 
     for key in env_keys:
         value = os.getenv(key, "").strip().rstrip("/")
@@ -88,8 +98,6 @@ def public_base_url(env_keys: tuple[str, ...]) -> str:
 
 __all__ = [
     "ExchangedToken",
-    "JWTVerifier",
-    "TokenExchangeClient",
     "TokenExchangeError",
     "build_exchange_client",
     "build_remote_auth",

@@ -1,4 +1,33 @@
 services:
+  mock-oidc:
+    build:
+      context: ..
+      dockerfile: tests/e2e/Dockerfile.mock-oidc
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/healthz')
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  mcp-auth-keygen:
+    image: alpine:3.22
+    command: >-
+      sh -c "apk add --no-cache openssl >/dev/null &&
+      chmod 0777 /keys /data && openssl genrsa -out /keys/signing.pem 2048 &&
+      chmod 0644 /keys/signing.pem && sleep infinity"
+    volumes:
+      - mcp-auth-keys:/keys
+      - mcp-auth-data:/data
+    healthcheck:
+      test: ["CMD", "test", "-s", "/keys/signing.pem"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
   mcp-server:
     build:
       context: ..
@@ -36,13 +65,25 @@ services:
       MCP_AUTH_RESOURCE: http://mcp-server:6328/databricks/mcp
       MCP_AUTH_LISTEN_ADDR: :8080
       MCP_AUTH_ALLOWED_SCOPES: tools:read
-      MCP_AUTH_LOCAL_DEVELOPMENT: "true"
-      MCP_AUTH_LOCAL_CLIENT_ID: compose-resource-server
-      MCP_AUTH_LOCAL_TOKEN_EXCHANGE: "true"
       MCP_AUTH_REQUIRE_HTTPS: "false"
+      MCP_AUTH_REGISTRATION_ENABLED: "true"
       MCP_AUTH_AUTHORIZATION_RESPONSE_ISS: "true"
+      MCP_AUTH_PRIVATE_KEY_FILE: /keys/signing.pem
+      MCP_AUTH_STORE: sqlite
+      MCP_AUTH_DATABASE_URL: /data/mcp-auth.db
+      MCP_AUTH_CONNECTORS_FILE: /etc/mcp-auth/connectors.json
+      MCP_AUTH_CONNECTOR: compose-oidc
+      MCP_AUTH_ALLOW_INSECURE_CONNECTORS: "true"
+    volumes:
+      - mcp-auth-keys:/keys:ro
+      - mcp-auth-data:/data
+      - ../tests/e2e/mock-oidc-connectors.json:/etc/mcp-auth/connectors.json:ro
     depends_on:
       mcp-server:
+        condition: service_healthy
+      mock-oidc:
+        condition: service_healthy
+      mcp-auth-keygen:
         condition: service_healthy
 
   e2e-client:
@@ -54,3 +95,14 @@ services:
         condition: service_started
       mcp-server:
         condition: service_healthy
+
+networks:
+  default:
+    name: ${MCP_AUTH_E2E_NETWORK:-mcp-auth-e2e}
+    ipam:
+      config:
+        - subnet: ${MCP_AUTH_E2E_SUBNET:-172.29.0.0/24}
+
+volumes:
+  mcp-auth-keys:
+  mcp-auth-data:

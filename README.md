@@ -18,7 +18,7 @@ An MCP client discovers protected-resource metadata from the resource server, di
 
 ## Local setup
 
-Requirements: Go 1.22+ and Python 3.12+.
+Requirements: Go 1.26+ and Python 3.12+.
 
 ```bash
 python -m venv .venv
@@ -31,6 +31,9 @@ pytest
 Run the authorization server in local mode. It generates an ephemeral RSA key when no key file is configured; do not use that mode for production.
 
 ```bash
+MCP_AUTH_LOCAL_DEVELOPMENT=true \
+MCP_AUTH_REQUIRE_HTTPS=false \
+MCP_AUTH_REGISTRATION_ENABLED=true \
 go run ./auth-server/cmd/auth-server
 ```
 
@@ -53,6 +56,16 @@ verifier = JWTVerifier(
 
 Go resource servers can import the module under `auth-client/go` and use `mcpauth.JWTVerifier`, discovery helpers, and `TokenExchangeClient`.
 
+The Python SDK is currently installed directly from Git while its API settles:
+
+```bash
+python -m pip install "mcp-auth-client @ git+https://github.com/Agent-Hellboy/mcp-auth.git#subdirectory=auth-client/python"
+```
+
+The authorization server selects a provider-neutral connector at runtime with
+`MCP_AUTH_CONNECTORS_FILE` and `MCP_AUTH_CONNECTOR`; the connector contains
+endpoints and environment-variable names for secrets, never secret values.
+
 ## Development commands
 
 ```bash
@@ -68,7 +81,7 @@ docker compose -f deploy/docker-compose.e2e.yml up --build --abort-on-container-
 docker compose -f deploy/docker-compose.e2e.yml down --volumes --remove-orphans
 ```
 
-CI also runs local and three-service Compose MCP OAuth compatibility flows, Go vulnerability analysis, Python dependency auditing, a Trivy HIGH/CRITICAL scan of the authorization-server image, and the public-repository secret/artifact audit.
+CI also runs local and production-mode Compose MCP OAuth compatibility flows with a mock OIDC issuer, Go vulnerability analysis, Python dependency auditing, a Trivy HIGH/CRITICAL scan of the authorization-server image, and the public-repository secret/artifact audit.
 
 The compatibility checks cover the shared authorization flow used by the
 2025-06-18 and 2026-07-28 MCP authorization specifications. The server emits
@@ -81,7 +94,7 @@ shape for deployments that need it.
 - Authorization Code + PKCE (`S256`) is required for public clients.
 - Access tokens are short-lived JWTs with issuer, audience/resource, scopes, and unique IDs.
 - Refresh tokens are opaque, hashed at rest, rotated on use, and revoked on reuse.
-- OAuth state and credentials are abstracted behind persistence/key-provider interfaces; enterprise deployments should use a shared encrypted database plus a secret manager/KMS/HSM, not an unencrypted Docker volume.
+- OAuth state and credentials are abstracted behind persistence/key-provider interfaces; enterprise deployments should use shared durable storage plus a secret manager/KMS/HSM, not an unencrypted Docker volume. SQLite is suitable for a single auth-server instance; use a shared database adapter for multiple replicas.
 - JWT verifiers allowlist algorithms and validate issuer, audience, expiry, and required scopes.
 - Tokens are redacted from structured audit logs.
 - Production deployments must use HTTPS, a persistent key provider, durable storage, restrictive CORS/trusted origins, and an upstream identity provider connector appropriate to the deployment.

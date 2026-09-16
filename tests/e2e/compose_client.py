@@ -27,6 +27,7 @@ RESOURCE_URL = "http://mcp-server:6328/databricks/mcp"
 MCP_URL = "http://mcp-server:6328/mcp"
 REDIRECT_URI = "http://127.0.0.1:39001/callback"
 DOWNSTREAM_AUDIENCE = "https://api.example.com"
+MOCK_OIDC_URL = "http://mock-oidc:8082"
 INITIALIZE_PARAMS = {
     "protocolVersion": "2025-06-18",
     "capabilities": {},
@@ -118,10 +119,14 @@ def run_flow(validate_issuer: bool) -> None:
         assert consent_page.status_code == 200
         consent_match = re.search(r'name="consent_id" value="([^"]+)"', consent_page.text)
         assert consent_match is not None
-        callback = client.post(
+        consent_response = client.post(
             f"{AUTH_URL}/authorize/consent",
             data={"consent_id": consent_match.group(1), "decision": "approve"},
         )
+        assert consent_response.status_code == 302
+        upstream_response = client.get(consent_response.headers["Location"])
+        assert upstream_response.status_code == 302
+        callback = client.get(upstream_response.headers["Location"])
         assert callback.status_code == 302
         callback_query = parse_qs(urlsplit(callback.headers["Location"]).query)
         oauth_state.validate_callback(
@@ -160,7 +165,7 @@ def run_flow(validate_issuer: bool) -> None:
             required_scopes={"tools:read"},
         )
         claims = asyncio.run(verifier.verify(access_token))
-        assert claims.subject == "local-user"
+        assert claims.subject == "compose-user"
         assert "tools:read" in claims.scopes
         print(
             "[e2e] JWKS signature, issuer, audience, expiry, and scope validation passed",
@@ -190,11 +195,12 @@ def run_flow(validate_issuer: bool) -> None:
 
         downstream_token = asyncio.run(exchange_downstream_token())
         assert downstream_token != access_token
+        downstream_jwks = client.get(f"{MOCK_OIDC_URL}/jwks").json()
         downstream_verifier = JWTVerifier.from_jwks(
-            jwks, issuer=authorization_server.issuer, audience=DOWNSTREAM_AUDIENCE
+            downstream_jwks, issuer=MOCK_OIDC_URL, audience=DOWNSTREAM_AUDIENCE
         )
         downstream_claims = asyncio.run(downstream_verifier.verify(downstream_token))
-        assert downstream_claims.subject == "local-downstream-subject"
+        assert downstream_claims.subject == "compose-user"
         print(
             "[e2e] private-key JWT authentication and separate downstream audience passed",
             flush=True,

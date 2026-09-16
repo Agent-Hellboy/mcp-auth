@@ -13,6 +13,11 @@ Important settings:
 - `MCP_AUTH_ISSUER`: stable HTTPS issuer URL, used in metadata and `iss`.
 - `MCP_AUTH_RESOURCE`: canonical resource audience placed in `aud`.
 - `MCP_AUTH_PRIVATE_KEY_FILE`: PEM RSA key path. Local mode generates an ephemeral test key.
+- `MCP_AUTH_STORE`: `memory` for tests/local development or `sqlite` for durable single-node deployments.
+- `MCP_AUTH_DATABASE_URL`: SQLite path when `MCP_AUTH_STORE=sqlite`.
+- `MCP_AUTH_CONNECTORS_FILE`: JSON file containing named upstream connectors.
+- `MCP_AUTH_CONNECTOR`: selected connector name. Local identity/token exchange is available only when
+  `MCP_AUTH_LOCAL_DEVELOPMENT=true`; production starts only with a named connector.
 - `MCP_AUTH_REGISTRATION_ENABLED`: disable open registration unless policy permits it.
 - `MCP_AUTH_ALLOWED_SCOPES`: space-independent comma-separated scope allowlist.
 - `MCP_AUTH_TRUSTED_ORIGINS`: exact CORS origins; keep this restrictive.
@@ -37,11 +42,23 @@ The configured RSA key signs RS256 access tokens. For key rotation, deploy a key
 
 `POST /register` accepts `client_name`, exact `redirect_uris`, and `token_endpoint_auth_method`. Public clients use `none`; confidential clients may use client-secret authentication. Redirects must be HTTPS or localhost and are matched exactly.
 
-`GET /authorize` requires `response_type=code`, `code_challenge_method=S256`, `code_challenge`, `resource`, and a registered redirect URI. It renders a consent page. Local development also supports `approve=true` to exercise the flow without a browser. An upstream `IdentityProvider` supplies the authenticated subject when consent is accepted.
+`GET /authorize` requires `response_type=code`, `code_challenge_method=S256`, `code_challenge`, `resource`, and a registered redirect URI. It renders a consent page. In production, accepting consent redirects to the selected connector's upstream authorization endpoint and `/identity/callback` completes the upstream code flow. Local development also supports `approve=true` to exercise the flow without a browser.
+
+Connector files are keyed JSON objects. They contain upstream endpoints, client
+IDs, requested scopes, MCP scopes, and `client_secret_env`—the name of an
+environment variable, never a literal secret. The same connector can provide
+interactive identity and RFC 8693 downstream exchange. All provider-specific
+behavior is behind `IdentityProvider` and `TokenExchanger` interfaces.
 
 ## Persistence
 
-`MemoryStore` is for local development and tests. A production `Store` must persist clients, consent requests, authorization codes, and refresh-token hashes transactionally in a managed database or another shared durable store. Authorization codes and consent state are one-time and short-lived. Refresh tokens are opaque, hashed, rotated on use, and revoked when reuse is detected.
+`MemoryStore` is for local development and tests. `SQLiteStore` persists clients,
+consent requests, authorization codes, and refresh-token hashes transactionally
+for a single server instance. A multi-replica production deployment must use a
+shared managed database adapter implementing `Store`; the HTTP handlers do not
+depend on SQLite. Authorization codes and consent state are one-time and
+short-lived. Refresh tokens are opaque, hashed, rotated on use, and revoked when
+reuse is detected.
 
 The local token exchanger exists only to make the development Compose flow
 self-contained. Production must inject a provider-backed `TokenExchanger` that

@@ -3,7 +3,14 @@ import time
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
-from mcp_auth_client import JWTVerifier, OAuthState, TokenVerificationError, unauthorized_headers
+from mcp_auth_client import (
+    ExchangedToken,
+    JWTVerifier,
+    OAuthState,
+    TokenExchangeError,
+    TokenVerificationError,
+    unauthorized_headers,
+)
 from mcp_auth_client.cache import BoundedTokenCache
 from mcp_auth_client.challenge import parse_www_authenticate
 from mcp_auth_client.models import AuthorizationServerConfig
@@ -144,3 +151,29 @@ def test_state_nonce_and_pkce_validation() -> None:
             expected_issuer="https://auth.example.com",
             issuer_parameter_supported=True,
         )
+
+
+def test_promoted_integration_helpers_are_public() -> None:
+    assert ExchangedToken("token").access_token == "token"
+    assert str(TokenExchangeError("invalid_target")) == "invalid_target"
+
+
+@pytest.mark.asyncio
+async def test_ssrf_safe_jwks_policy_rejects_private_network_url() -> None:
+    private, _ = key_pair()
+    token = jwt.encode(
+        {
+            "iss": "https://auth.example.com",
+            "sub": "user",
+            "aud": "https://mcp.example.com",
+            "exp": time.time() + 300,
+        },
+        private,
+        algorithm="RS256",
+        headers={"kid": "test"},
+    )
+    verifier = JWTVerifier(
+        "http://10.0.0.1/jwks", "https://auth.example.com", "https://mcp.example.com"
+    )
+    with pytest.raises(TokenVerificationError, match="SSRF"):
+        await verifier.verify(token)

@@ -1,3 +1,4 @@
+import inspect
 from typing import Any
 
 from .verifier import JWTVerifier
@@ -17,12 +18,14 @@ class RemoteAuthProvider:
         base_url: str,
         allowed_client_redirect_uris: list[str] | None = None,
         scopes_supported: list[str] | None = None,
+        ssrf_safe: bool = True,
     ) -> None:
         self.token_verifier = token_verifier
         self.authorization_servers = authorization_servers
         self.base_url = base_url
         self.allowed_client_redirect_uris = allowed_client_redirect_uris
         self.scopes_supported = scopes_supported
+        self.ssrf_safe = ssrf_safe
 
     def build(self) -> Any:
         try:
@@ -36,11 +39,14 @@ class RemoteAuthProvider:
             raise RuntimeError(
                 "install mcp-auth-client[fastmcp] to build the FastMCP adapter"
             ) from exc
-        verifier = FastMCPJWTVerifier(
-            jwks_uri=self.token_verifier.jwks_uri,
-            issuer=self.token_verifier.issuer,
-            audience=self.token_verifier.audience,
-        )
+        verifier_kwargs: dict[str, Any] = {
+            "jwks_uri": self.token_verifier.jwks_uri,
+            "issuer": self.token_verifier.issuer,
+            "audience": self.token_verifier.audience,
+        }
+        if "ssrf_safe" in inspect.signature(FastMCPJWTVerifier).parameters:
+            verifier_kwargs["ssrf_safe"] = self.ssrf_safe
+        verifier = FastMCPJWTVerifier(**verifier_kwargs)
         kwargs: dict[str, Any] = {
             "token_verifier": verifier,
             "authorization_servers": self.authorization_servers,

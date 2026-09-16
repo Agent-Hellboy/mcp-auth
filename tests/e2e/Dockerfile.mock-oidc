@@ -1,0 +1,7 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY tests/e2e/mock_oidc.py /app/mock_oidc.py
+RUN pip install --no-cache-dir "PyJWT[crypto]>=2.9,<3"
+EXPOSE 8082
+CMD ["python", "/app/mock_oidc.py"]

@@ -112,6 +112,7 @@ def test_mcp_authorization_code_pkce_and_resource_flow() -> None:
         "MCP_AUTH_LOCAL_DEVELOPMENT": "true",
         "MCP_AUTH_LOCAL_SUBJECT": "e2e-user",
         "MCP_AUTH_REQUIRE_HTTPS": "false",
+        "MCP_AUTH_REGISTRATION_ENABLED": "true",
     }
     process = subprocess.Popen(
         command,

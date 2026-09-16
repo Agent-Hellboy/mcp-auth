@@ -1,16 +1,34 @@
 package main
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/example/mcp-auth/auth-server/server"
 )
 
 func main() {
 	config := server.ConfigFromEnv()
-	authServer, err := server.NewServer(config, server.NewMemoryStore(), server.LocalIdentityProvider{Subject: config.LocalSubject}, nil, os.Stderr)
+	if err := config.Validate(); err != nil {
+		slog.Error("invalid server configuration", "error", err)
+		os.Exit(1)
+	}
+	store, closeStore, err := buildStore(config)
+	if err != nil {
+		slog.Error("store initialization failed", "error", err)
+		os.Exit(1)
+	}
+	defer closeStore()
+
+	config, identityProvider, tokenExchanger, err := buildProviders(config)
+	if err != nil {
+		slog.Error("provider initialization failed", "error", err)
+		os.Exit(1)
+	}
+	authServer, err := server.NewServer(config, store, identityProvider, tokenExchanger, os.Stderr)
 	if err != nil {
 		slog.Error("server initialization failed", "error", err)
 		os.Exit(1)
@@ -33,9 +51,55 @@ func main() {
 			TTL:         config.AccessTokenTTL,
 		}
 	}
+	if config.LocalDevelopment && config.PrivateKeyFile == "" {
+		slog.Warn("INSECURE LOCAL DEVELOPMENT: using an ephemeral signing key; all tokens become invalid after restart")
+	}
 	slog.Info("mcp auth server listening", "addr", config.ListenAddr, "issuer", config.Issuer)
 	if err := http.ListenAndServe(config.ListenAddr, authServer.Handler()); err != nil {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func buildStore(config server.Config) (server.Store, func(), error) {
+	switch strings.ToLower(config.StoreBackend) {
+	case "memory":
+		return server.NewMemoryStore(), func() {}, nil
+	case "sqlite":
+		store, err := server.NewSQLiteStore(config.DatabaseURL)
+		if err != nil {
+			return nil, nil, err
+		}
+		return store, func() { _ = store.Close() }, nil
+	default:
+		return nil, nil, errors.New("unsupported store backend")
+	}
+}
+
+func buildProviders(config server.Config) (server.Config, server.IdentityProvider, server.TokenExchanger, error) {
+	if config.ConnectorName == "" {
+		if !config.LocalDevelopment {
+			return config, nil, nil, errors.New("a named connector is required outside local development")
+		}
+		return config, server.LocalIdentityProvider{Subject: config.LocalSubject}, nil, nil
+	}
+	connectors, err := server.LoadConnectorsWithOptions(config.ConnectorsFile, config.LocalDevelopment || config.AllowInsecureConnectors)
+	if err != nil {
+		return config, nil, nil, err
+	}
+	connector, ok := connectors[config.ConnectorName]
+	if !ok {
+		return config, nil, nil, errors.New("configured connector was not found")
+	}
+	config.AllowedScopes = append([]string(nil), connector.MCPScopes...)
+	callbackURL := strings.TrimRight(config.Issuer, "/") + "/identity/callback"
+	identity, err := server.NewOIDCIdentityProvider(connector, callbackURL)
+	if err != nil {
+		return config, nil, nil, err
+	}
+	exchanger, err := server.NewOIDCTokenExchanger(connector)
+	if err != nil {
+		return config, nil, nil, err
+	}
+	return config, identity, exchanger, nil
 }

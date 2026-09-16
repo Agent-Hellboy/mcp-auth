@@ -1,0 +1,15 @@
+{
+  "compose-oidc": {
+    "issuer": "http://mock-oidc:8082",
+    "authorization_endpoint": "http://mock-oidc:8082/authorize",
+    "token_endpoint": "http://mock-oidc:8082/token",
+    "jwks_uri": "http://mock-oidc:8082/jwks",
+    "client_id": "compose-auth-client",
+    "client_secret_env": "",
+    "scopes": ["openid"],
+    "mcp_scopes": ["tools:read"],
+    "exchange_client_id": "compose-exchange-client",
+    "token_endpoint_auth_method": "none",
+    "allowed_client_redirect_uris": ["http://mcp-auth:8080/identity/callback"]
+  }
+}

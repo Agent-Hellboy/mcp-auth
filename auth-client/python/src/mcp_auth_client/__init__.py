@@ -5,6 +5,13 @@ from .challenge import ProtectedResourceChallenge, parse_www_authenticate, unaut
 from .discovery import discover_authorization_server, discover_protected_resource
 from .fastmcp import RemoteAuthProvider
 from .http import AsyncHTTPClient
+from .integration import (
+    ExchangedToken,
+    TokenExchangeError,
+    build_exchange_client,
+    build_remote_auth,
+    public_base_url,
+)
 from .models import AuthorizationServerConfig, ProtectedResourceConfig
 from .oauth import OAuthState, authorization_url
 from .token_exchange import (
@@ -18,6 +25,7 @@ __all__ = [
     "AuthorizationServerConfig",
     "AsyncHTTPClient",
     "DownstreamToken",
+    "ExchangedToken",
     "JWTVerifier",
     "MCPClientToken",
     "OAuthState",
@@ -28,11 +36,15 @@ __all__ = [
     "ResourceServerCredential",
     "TokenClaims",
     "TokenExchangeClient",
+    "TokenExchangeError",
     "TokenSet",
     "TokenVerificationError",
     "discover_authorization_server",
     "discover_protected_resource",
     "parse_www_authenticate",
-    "unauthorized_headers",
     "authorization_url",
+    "build_exchange_client",
+    "build_remote_auth",
+    "public_base_url",
+    "unauthorized_headers",
 ]

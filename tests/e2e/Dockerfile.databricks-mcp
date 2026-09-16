@@ -7,13 +7,11 @@ RUN apt-get update \
 WORKDIR /app
 COPY examples/databricks-mcp /app/databricks
 COPY auth-client/python /app/auth-client/python
-COPY tests/e2e/mcp-as-client /app/mcp-as-client
 COPY tests/e2e/start-databricks-e2e.sh /app/start-databricks-e2e.sh
 COPY tests/e2e/nginx-databricks.conf /app/nginx-databricks.conf
 
 RUN pip install --no-cache-dir \
       /app/auth-client/python \
-      /app/mcp-as-client \
       "databricks-sdk>=0.80,<1" \
       "fastmcp>=3.4.4,<4" \
       "mcp>=1.27,<2" \
@@ -21,6 +19,12 @@ RUN pip install --no-cache-dir \
       "sqlglot>=25,<30" \
       "uvicorn>=0.30,<1" \
     && pip install --no-cache-dir --no-deps /app/databricks
+
+# The pinned optional example predates the SDK package rename. Keep its import
+# path working in this image while the external submodule migrates; the actual
+# implementation and public API live in mcp_auth_client.
+RUN ln -s /usr/local/lib/python3.12/site-packages/mcp_auth_client \
+      /usr/local/lib/python3.12/site-packages/mcp_as_client
 
 RUN useradd --create-home --uid 1000 appuser \
     && mkdir -p /var/lib/mcp-resource-auth /metrics \

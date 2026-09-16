@@ -1,7 +1,9 @@
+import ipaddress
 import json
 import time
 from dataclasses import dataclass
 from typing import Any, cast
+from urllib.parse import urlparse
 
 import httpx
 import jwt
@@ -31,6 +33,7 @@ class JWTVerifier:
         algorithms: tuple[str, ...] = ("RS256",),
         http_client: httpx.AsyncClient | None = None,
         jwks_ttl: float = 300.0,
+        ssrf_safe: bool = True,
     ) -> None:
         if not algorithms:
             raise ValueError("at least one JWT algorithm must be allowlisted")
@@ -41,6 +44,7 @@ class JWTVerifier:
         self.algorithms = algorithms
         self._http_client = http_client
         self._jwks_ttl = jwks_ttl
+        self.ssrf_safe = ssrf_safe
         self._jwks: dict[str, Any] = {}
         self._jwks_loaded_at = 0.0
 
@@ -95,6 +99,7 @@ class JWTVerifier:
             if not self._jwks:
                 raise TokenVerificationError("in-memory JWKS was not configured")
             return
+        self._validate_jwks_uri()
         owns_client = self._http_client is None
         client = self._http_client or httpx.AsyncClient()
         try:
@@ -106,6 +111,23 @@ class JWTVerifier:
         finally:
             if owns_client:
                 await client.aclose()
+
+    def _validate_jwks_uri(self) -> None:
+        parsed = urlparse(self.jwks_uri)
+        if parsed.scheme not in {"https", "http"} or not parsed.hostname:
+            raise TokenVerificationError("JWKS URI must be an absolute HTTP(S) URL")
+        if not self.ssrf_safe:
+            return
+        if parsed.username or parsed.password:
+            raise TokenVerificationError("JWKS URI must not contain credentials")
+        if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            raise TokenVerificationError("SSRF-safe JWKS loading requires HTTPS")
+        try:
+            address = ipaddress.ip_address(parsed.hostname)
+        except ValueError:
+            return
+        if not address.is_loopback:
+            raise TokenVerificationError("SSRF-safe JWKS loading rejects non-loopback IP addresses")
 
     def _set_jwks(self, data: object) -> None:
         if not isinstance(data, dict) or not isinstance(data.get("keys"), list):
