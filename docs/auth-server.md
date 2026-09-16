@@ -24,6 +24,12 @@ Important settings:
 - `MCP_AUTH_REQUIRE_HTTPS`: enable outside local development.
 - `MCP_AUTH_LOCAL_CLIENT_ID`: local-development-only pre-registered client used by
   the Compose token-exchange test; leave it empty outside local development.
+- `MCP_AUTH_RESOURCE_CLIENTS_FILE`: JSON array of resource servers pre-provisioned to
+  authenticate the token-exchange grant with RFC 7523 `private_key_jwt`. Each entry
+  is `{"client_id", "name", "public_key_pem"}` or `{"client_id", "name", "public_key_file"}`
+  (exactly one of the last two). A resource server's own private key never appears
+  here; only its public key is registered, so the auth server can verify the
+  `client_assertion` it presents on every token-exchange request.
 
 The Dockerfile builds a static, non-root image. Put TLS termination in a trusted reverse proxy or serve the endpoints through an HTTPS gateway.
 
