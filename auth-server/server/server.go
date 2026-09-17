@@ -381,6 +381,7 @@ func (s *Server) refreshTokenToken(w http.ResponseWriter, r *http.Request) {
 func (s *Server) issueTokens(w http.ResponseWriter, ctx context.Context, clientID, subject string, scopes []string, resource, familyID string) {
 	access, err := s.KeyProvider.Sign(ctx, s.Config.Issuer, subject, resource, scopes, s.Config.AccessTokenTTL, "")
 	if err != nil {
+		s.Audit.Event("token_issue", "failure", map[string]any{"reason": err.Error()})
 		oauthError(w, http.StatusInternalServerError, "server_error")
 		return
 	}
@@ -389,6 +390,7 @@ func (s *Server) issueTokens(w http.ResponseWriter, ctx context.Context, clientI
 		familyID = randomID()
 	}
 	if err := s.Store.SaveRefreshToken(RefreshToken{ValueHash: HashSecret(refresh), FamilyID: familyID, ClientID: clientID, Subject: subject, Scope: scopes, Resource: resource, ExpiresAt: s.now().Add(s.Config.RefreshTokenTTL)}); err != nil {
+		s.Audit.Event("token_issue", "failure", map[string]any{"reason": err.Error()})
 		oauthError(w, http.StatusInternalServerError, "server_error")
 		return
 	}
