@@ -9,13 +9,13 @@ The standalone authorization-server image is published at
 It is a minimal, non-root image containing only the Go authorization server:
 
 ```bash
-docker pull princekrroshan01/mcp-auth-server:0.1.1
+docker pull princekrroshan01/mcp-auth-server:0.1.2
 docker run --rm -p 8080:8080 \
   -e MCP_AUTH_ISSUER=http://localhost:8080 \
   -e MCP_AUTH_RESOURCE=http://localhost:8081/mcp \
   -e MCP_AUTH_LOCAL_DEVELOPMENT=true \
   -e MCP_AUTH_REQUIRE_HTTPS=false \
-  princekrroshan01/mcp-auth-server:0.1.1
+  princekrroshan01/mcp-auth-server:0.1.2
 ```
 
 The example above is intentionally local-development-only. For a deployment,
@@ -127,7 +127,7 @@ verifier = JWTVerifier(
 )
 ```
 
-Go resource servers can import `github.com/Agent-Hellboy/mcp-auth/auth-client/go/mcpauth` and use `mcpauth.JWTVerifier`, discovery helpers, and `TokenExchangeClient` from the `auth-client/go/v0.1.1` release. The authorization server module is `github.com/Agent-Hellboy/mcp-auth/auth-server` at `auth-server/v0.1.1`.
+Go resource servers can import `github.com/Agent-Hellboy/mcp-auth/auth-client/go/mcpauth` and use `mcpauth.JWTVerifier`, discovery helpers, and `TokenExchangeClient` from the `auth-client/go/v0.1.2` release. The authorization server module is `github.com/Agent-Hellboy/mcp-auth/auth-server` at `auth-server/v0.1.2`.
 
 The Python SDK is currently installed directly from Git while its API settles:
 

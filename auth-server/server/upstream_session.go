@@ -40,7 +40,7 @@ func NewUpstreamSessionExchanger(store Store, connector ConnectorConfig) (*Upstr
 	if err != nil {
 		return nil, err
 	}
-	return &UpstreamSessionExchanger{Store: store, Connector: connector, Secret: secret, Client: http.DefaultClient}, nil
+	return &UpstreamSessionExchanger{Store: store, Connector: connector, Secret: secret, Client: connector.httpClient()}, nil
 }
 
 func (e *UpstreamSessionExchanger) Exchange(ctx context.Context, request ExchangeRequest) (ExchangeResponse, error) {
