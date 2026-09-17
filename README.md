@@ -2,6 +2,29 @@
 
 `mcp-auth` is a provider-neutral OAuth platform for HTTP-based Model Context Protocol (MCP) resource servers.
 
+## Docker Hub
+
+The standalone authorization-server image is published at
+[`princekrroshan01/mcp-auth-server`](https://hub.docker.com/r/princekrroshan01/mcp-auth-server).
+It is a minimal, non-root image containing only the Go authorization server:
+
+```bash
+docker pull princekrroshan01/mcp-auth-server:0.1.1
+docker run --rm -p 8080:8080 \
+  -e MCP_AUTH_ISSUER=http://localhost:8080 \
+  -e MCP_AUTH_RESOURCE=http://localhost:8081/mcp \
+  -e MCP_AUTH_LOCAL_DEVELOPMENT=true \
+  -e MCP_AUTH_REQUIRE_HTTPS=false \
+  princekrroshan01/mcp-auth-server:0.1.1
+```
+
+The example above is intentionally local-development-only. For a deployment,
+pin an immutable release tag or digest, use HTTPS, mount a persistent signing
+key and durable store, and configure an OIDC/OAuth connector. Do not put client
+secrets, signing keys, or administrator credentials in an image or a public
+Dockerfile. `latest` is published for non-prerelease releases for convenience,
+but production deployments should use an explicit version or digest.
+
 It separates three concerns that are often coupled:
 
 - **MCP clients** complete standard Authorization Code + PKCE.
@@ -104,7 +127,7 @@ verifier = JWTVerifier(
 )
 ```
 
-Go resource servers can import `github.com/Agent-Hellboy/mcp-auth/auth-client/go/mcpauth` and use `mcpauth.JWTVerifier`, discovery helpers, and `TokenExchangeClient` from the `auth-client/go/v0.1.0` release. The authorization server module is `github.com/Agent-Hellboy/mcp-auth/auth-server` at `auth-server/v0.1.0`.
+Go resource servers can import `github.com/Agent-Hellboy/mcp-auth/auth-client/go/mcpauth` and use `mcpauth.JWTVerifier`, discovery helpers, and `TokenExchangeClient` from the `auth-client/go/v0.1.1` release. The authorization server module is `github.com/Agent-Hellboy/mcp-auth/auth-server` at `auth-server/v0.1.1`.
 
 The Python SDK is currently installed directly from Git while its API settles:
 
@@ -149,7 +172,6 @@ shape for deployments that need it.
 - The token-exchange grant requires the caller to authenticate as a pre-registered
   resource server (RFC 7523 `private_key_jwt`) and presents only a `subject_token`
   this server itself issued; it is not an open relay to the upstream connector.
-- Access tokens are short-lived JWTs with issuer, audience/resource, scopes, and unique IDs.
 - Access tokens are short-lived `at+jwt` tokens with issuer, audience/resource, scopes, and unique IDs.
 - Refresh tokens are opaque, hashed at rest, rotated on use, and revoked on reuse.
 - OAuth state and credentials are abstracted behind persistence/key-provider interfaces; enterprise deployments should use shared durable storage plus a secret manager/KMS/HSM, not an unencrypted Docker volume. SQLite is suitable for a single auth-server instance; use a shared database adapter for multiple replicas.
