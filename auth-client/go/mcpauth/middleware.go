@@ -2,6 +2,7 @@ package mcpauth
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -30,6 +31,10 @@ func RequireToken(verifier *JWTVerifier, metadata ResourceMetadata, next http.Ha
 					scopes = append(scopes, scope)
 				}
 			}
+			// Verification errors contain only a safe failure category; the
+			// bearer value is never logged. This gives resource servers an
+			// actionable diagnostic while preserving the generic wire response.
+			log.Printf("mcp-auth token verification failed: %v", err)
 			if strings.Contains(err.Error(), ": scope") {
 				writeChallenge(w, http.StatusForbidden, UnauthorizedHeadersForError(metadata.URL, scopes, "insufficient_scope", "required scope is missing"))
 			} else {
