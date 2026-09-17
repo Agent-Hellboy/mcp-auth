@@ -45,7 +45,7 @@ func (s *SQLiteStore) Close() error { return s.db.Close() }
 // existing database file applies exactly the missing ALTER/CREATE statements
 // instead of relying on CREATE TABLE IF NOT EXISTS, which silently no-ops on
 // a table that already exists in its old shape.
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
 
 // migrations[v] takes a database at schema version v to v+1. Statements must
 // be additive and safe to run inside a single transaction alongside the
@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS upstream_sessions (
   token_type TEXT NOT NULL, expires_at INTEGER NOT NULL, scope TEXT NOT NULL
 );`,
 	2: `ALTER TABLE clients ADD COLUMN algorithm TEXT NOT NULL DEFAULT 'RS256';`,
+	3: `ALTER TABLE refresh_tokens ADD COLUMN family_id TEXT NOT NULL DEFAULT '';`,
 }
 
 const freshSchema = `
