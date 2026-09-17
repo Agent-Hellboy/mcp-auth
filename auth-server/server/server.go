@@ -239,6 +239,7 @@ func (s *Server) identityCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if upstreamError := r.URL.Query().Get("error"); upstreamError != "" {
+		s.Audit.Event("identity_callback", "failure", map[string]any{"reason": "upstream_error", "error_type": upstreamError})
 		redirectError(w, r, pending.Request, "access_denied", "upstream identity authentication failed", s.Config.Issuer, s.Config.AuthorizationResponseIssuer)
 		return
 	}
@@ -247,6 +248,10 @@ func (s *Server) identityCallback(w http.ResponseWriter, r *http.Request) {
 		CodeVerifier: pending.CodeVerifier,
 	})
 	if err != nil {
+		// Complete errors are deliberately kept out of the browser response, but
+		// the sanitized error text is needed to diagnose provider configuration
+		// without logging the authorization code, token, or client secret.
+		s.Audit.Event("identity_callback", "failure", map[string]any{"reason": err.Error()})
 		redirectError(w, r, pending.Request, "access_denied", "upstream identity authentication failed", s.Config.Issuer, s.Config.AuthorizationResponseIssuer)
 		return
 	}
