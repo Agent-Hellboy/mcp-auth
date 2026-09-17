@@ -3,6 +3,7 @@ package mcpauth
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -35,9 +36,20 @@ func ParseWWWAuthenticate(value string) ProtectedResourceChallenge {
 	return result
 }
 func UnauthorizedHeaders(metadataURL string, scopes []string) map[string]string {
-	value := fmt.Sprintf(`Bearer resource_metadata="%s"`, metadataURL)
+	value := fmt.Sprintf(`Bearer resource_metadata=%s`, strconv.Quote(metadataURL))
 	if len(scopes) > 0 {
-		value += fmt.Sprintf(` scope="%s"`, strings.Join(scopes, " "))
+		value += fmt.Sprintf(`, scope=%s`, strconv.Quote(strings.Join(scopes, " ")))
+	}
+	return map[string]string{"WWW-Authenticate": value}
+}
+
+func UnauthorizedHeadersForError(metadataURL string, scopes []string, code, description string) map[string]string {
+	value := UnauthorizedHeaders(metadataURL, scopes)["WWW-Authenticate"]
+	if code != "" {
+		value += fmt.Sprintf(`, error=%s`, strconv.Quote(code))
+	}
+	if description != "" {
+		value += fmt.Sprintf(`, error_description=%s`, strconv.Quote(description))
 	}
 	return map[string]string{"WWW-Authenticate": value}
 }

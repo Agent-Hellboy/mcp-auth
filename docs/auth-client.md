@@ -56,7 +56,7 @@ auth = RemoteAuthProvider(
 
 Install the FastMCP extra only when using FastMCP. Otherwise call `JWTVerifier.verify` and return `unauthorized_headers(...)` from the resource server's 401 response.
 
-The verifier allowlists RSA SHA-2 algorithms, refreshes JWKS on a bounded schedule, validates `iss`, `aud`, `exp`, `sub`, and required scopes, and rejects unknown signing keys.
+The verifier is explicitly RS256-only, refreshes JWKS on a bounded schedule, validates `iss`, `aud`, `exp`, `nbf`, `sub`, and required scopes, and rejects unknown signing keys. `VerifyContext` and `RequireToken` propagate request cancellation and emit standards-compliant bearer challenges.
 
 `build_remote_auth`, `build_exchange_client`, `public_base_url`,
 `TokenExchangeError`, and `ExchangedToken` are part of the SDK itself. The
@@ -66,7 +66,7 @@ disable it only for a controlled local test transport.
 
 ## Go
 
-Import `github.com/example/mcp-auth/auth-client/go/mcpauth`, configure `JWTVerifier`, and use `DiscoverProtectedResource`, `DiscoverAuthorizationServer`, `ParseWWWAuthenticate`, and `TokenExchangeClient`. The Go SDK uses the standard library and supports bounded token caching.
+Import `github.com/Agent-Hellboy/mcp-auth/auth-client/go/mcpauth`, configure `JWTVerifier`, and use `DiscoverProtectedResource`, `DiscoverAuthorizationServer`, `ParseWWWAuthenticate`, and `TokenExchangeClient`. The Go SDK uses the standard library and supports bounded token caching. Install the client module at the `auth-client/go/v0.1.0` release tag.
 
 ## Discovery and third-party providers
 

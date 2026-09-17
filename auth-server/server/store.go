@@ -43,6 +43,7 @@ type AuthorizationCode struct {
 
 type RefreshToken struct {
 	ValueHash string
+	FamilyID  string
 	ClientID  string
 	Subject   string
 	Scope     []string
@@ -86,6 +87,7 @@ type Store interface {
 	SaveRefreshToken(RefreshToken) error
 	ConsumeRefreshToken(string, time.Time) (RefreshToken, error)
 	RevokeRefreshToken(string) error
+	RevokeRefreshFamily(string) error
 	SaveConsentRequest(ConsentRequest) error
 	ConsumeConsentRequest(string, time.Time) (ConsentRequest, error)
 	// ConsumeClientAssertionJTI records a client_assertion's (client_id, jti)
@@ -210,6 +212,28 @@ func (s *MemoryStore) RevokeRefreshToken(value string) error {
 	}
 	token.Revoked = true
 	s.refresh[hash] = token
+	return nil
+}
+
+func (s *MemoryStore) RevokeRefreshFamily(value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hash := HashSecret(value)
+	token, ok := s.refresh[hash]
+	if !ok {
+		return ErrNotFound
+	}
+	if token.FamilyID == "" {
+		token.Revoked = true
+		s.refresh[hash] = token
+		return nil
+	}
+	for key, candidate := range s.refresh {
+		if candidate.FamilyID == token.FamilyID {
+			candidate.Revoked = true
+			s.refresh[key] = candidate
+		}
+	}
 	return nil
 }
 

@@ -6,6 +6,8 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -62,5 +64,32 @@ func TestChallenge(t *testing.T) {
 	challenge := ParseWWWAuthenticate(`Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource" scope="tools:read"`)
 	if challenge.ResourceMetadata == "" || !strings.Contains(challenge.Scope, "tools:read") {
 		t.Fatal("challenge did not parse")
+	}
+}
+
+func TestUnauthorizedHeadersAreCommaSeparated(t *testing.T) {
+	header := UnauthorizedHeaders("https://resource.example/.well-known/oauth-protected-resource", []string{"tools:read"})["WWW-Authenticate"]
+	if !strings.Contains(header, `, scope="tools:read"`) {
+		t.Fatalf("malformed challenge: %s", header)
+	}
+	if strings.Contains(header, `" scope=`) {
+		t.Fatalf("challenge parameters are not comma-separated: %s", header)
+	}
+}
+
+func TestDiscoveryInsertsWellKnownPathAndValidatesIssuer(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/oauth-authorization-server/tenant1" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"issuer":"` + server.URL + `/tenant1"}`))
+	}))
+	defer server.Close()
+	issuer := server.URL + "/tenant1"
+	metadata, err := DiscoverAuthorizationServer(server.Client(), issuer)
+	if err != nil || metadata.Issuer != issuer {
+		t.Fatalf("discovery failed: %+v, %v", metadata, err)
 	}
 }

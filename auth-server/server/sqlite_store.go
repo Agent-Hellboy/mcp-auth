@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS authorization_codes (
   subject TEXT NOT NULL, nonce TEXT NOT NULL, expires_at INTEGER NOT NULL, used INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS refresh_tokens (
-  value_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, subject TEXT NOT NULL,
+  value_hash TEXT PRIMARY KEY, family_id TEXT NOT NULL DEFAULT '', client_id TEXT NOT NULL, subject TEXT NOT NULL,
   scope TEXT NOT NULL, resource TEXT NOT NULL, expires_at INTEGER NOT NULL,
   used INTEGER NOT NULL, revoked INTEGER NOT NULL
 );
@@ -246,8 +246,8 @@ func (s *SQLiteStore) SaveRefreshToken(token RefreshToken) error {
 		return err
 	}
 	_, err = s.db.Exec(`INSERT OR REPLACE INTO refresh_tokens
-(value_hash,client_id,subject,scope,resource,expires_at,used,revoked) VALUES (?,?,?,?,?,?,?,?)`,
-		token.ValueHash, token.ClientID, token.Subject, string(scope), token.Resource, token.ExpiresAt.UnixNano(),
+(value_hash,family_id,client_id,subject,scope,resource,expires_at,used,revoked) VALUES (?,?,?,?,?,?,?,?,?)`,
+		token.ValueHash, token.FamilyID, token.ClientID, token.Subject, string(scope), token.Resource, token.ExpiresAt.UnixNano(),
 		boolInt(token.Used), boolInt(token.Revoked))
 	return err
 }
@@ -262,8 +262,8 @@ func (s *SQLiteStore) ConsumeRefreshToken(value string, now time.Time) (RefreshT
 	var scope string
 	var expires int64
 	var used, revoked int
-	err = tx.QueryRow(`SELECT client_id,subject,scope,resource,expires_at,used,revoked
-FROM refresh_tokens WHERE value_hash=?`, HashSecret(value)).Scan(&token.ClientID, &token.Subject, &scope,
+	err = tx.QueryRow(`SELECT family_id,client_id,subject,scope,resource,expires_at,used,revoked
+FROM refresh_tokens WHERE value_hash=?`, HashSecret(value)).Scan(&token.FamilyID, &token.ClientID, &token.Subject, &scope,
 		&token.Resource, &expires, &used, &revoked)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RefreshToken{}, ErrNotFound
@@ -301,6 +301,22 @@ func (s *SQLiteStore) RevokeRefreshToken(value string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *SQLiteStore) RevokeRefreshFamily(value string) error {
+	var familyID string
+	if err := s.db.QueryRow(`SELECT family_id FROM refresh_tokens WHERE value_hash=?`, HashSecret(value)).Scan(&familyID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if familyID == "" {
+		_, err := s.db.Exec(`UPDATE refresh_tokens SET revoked=1 WHERE value_hash=?`, HashSecret(value))
+		return err
+	}
+	_, err := s.db.Exec(`UPDATE refresh_tokens SET revoked=1 WHERE family_id=?`, familyID)
+	return err
 }
 
 func (s *SQLiteStore) SaveConsentRequest(request ConsentRequest) error {

@@ -66,6 +66,29 @@ validate JWTs locally from JWKS, and obtain downstream credentials when needed.
 For sequence diagrams, credential boundaries, extension points, and deployment
 topologies, see [Architecture](docs/architecture.md).
 
+## Local setup
+
+Requirements: Go 1.26+ and Python 3.12+.
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
+(cd auth-server && GOWORK=off go test ./...) && (cd auth-client/go && GOWORK=off go test ./...)
+pytest
+```
+
+Run the authorization server in local mode. It generates an ephemeral RSA key when no key file is configured; do not use that mode for production.
+
+```bash
+MCP_AUTH_LOCAL_DEVELOPMENT=true \
+MCP_AUTH_REQUIRE_HTTPS=false \
+MCP_AUTH_REGISTRATION_ENABLED=true \
+(cd auth-server && GOWORK=off go run ./cmd/auth-server)
+```
+
+The default issuer is `http://localhost:8080`, the resource audience is `http://localhost:8081/mcp`, and metadata is available at `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`, and `/.well-known/jwks.json`.
+
 ## Packages
 
 Python resource servers can use:
@@ -81,7 +104,7 @@ verifier = JWTVerifier(
 )
 ```
 
-Go resource servers can import the module under `auth-client/go` and use `mcpauth.JWTVerifier`, discovery helpers, and `TokenExchangeClient`.
+Go resource servers can import `github.com/Agent-Hellboy/mcp-auth/auth-client/go/mcpauth` and use `mcpauth.JWTVerifier`, discovery helpers, and `TokenExchangeClient` from the `auth-client/go/v0.1.0` release. The authorization server module is `github.com/Agent-Hellboy/mcp-auth/auth-server` at `auth-server/v0.1.0`.
 
 The Python SDK is currently installed directly from Git while its API settles:
 
@@ -97,6 +120,29 @@ Publishing a GitHub Release (`vX.Y.Z`) builds `auth-server` and pushes
 `princekrroshan01/mcp-auth-server` to Docker Hub with that version tag, and
 `latest` for non-prerelease versions.
 
+## Development commands
+
+```bash
+ruff check .
+ruff format --check .
+mypy auth-client/python/src
+pytest -q
+(cd auth-server && GOWORK=off go test ./...) && (cd auth-client/go && GOWORK=off go test ./...)
+(cd auth-server && GOWORK=off go vet ./...) && (cd auth-client/go && GOWORK=off go vet ./...)
+uv run pip-audit --skip-editable
+python -m build
+docker compose -f deploy/docker-compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e-client
+docker compose -f deploy/docker-compose.e2e.yml down --volumes --remove-orphans
+```
+
+CI also runs local and production-mode Compose MCP OAuth compatibility flows with a mock OIDC issuer, Go vulnerability analysis, Python dependency auditing, a Trivy HIGH/CRITICAL scan of the authorization-server image, and the public-repository secret/artifact audit.
+
+The compatibility checks cover the shared authorization flow used by the
+2025-06-18 and 2026-07-28 MCP authorization specifications. The server emits
+the newer authorization-response `iss` parameter by default; setting
+`MCP_AUTH_AUTHORIZATION_RESPONSE_ISS=false` preserves the earlier response
+shape for deployments that need it.
+
 ## Security model
 
 - Authorization Code + PKCE (`S256`) is required for public clients.
@@ -104,9 +150,10 @@ Publishing a GitHub Release (`vX.Y.Z`) builds `auth-server` and pushes
   resource server (RFC 7523 `private_key_jwt`) and presents only a `subject_token`
   this server itself issued; it is not an open relay to the upstream connector.
 - Access tokens are short-lived JWTs with issuer, audience/resource, scopes, and unique IDs.
+- Access tokens are short-lived `at+jwt` tokens with issuer, audience/resource, scopes, and unique IDs.
 - Refresh tokens are opaque, hashed at rest, rotated on use, and revoked on reuse.
 - OAuth state and credentials are abstracted behind persistence/key-provider interfaces; enterprise deployments should use shared durable storage plus a secret manager/KMS/HSM, not an unencrypted Docker volume. SQLite is suitable for a single auth-server instance; use a shared database adapter for multiple replicas.
-- JWT verifiers allowlist algorithms and validate issuer, audience, expiry, and required scopes.
+- JWT verifiers are RS256-only, use bounded JWKS refreshes, and validate issuer, audience, expiry, `nbf`, and required scopes.
 - Tokens are redacted from structured audit logs.
 - Production deployments must use HTTPS, a persistent key provider, durable storage, restrictive CORS/trusted origins, and an upstream identity provider connector appropriate to the deployment.
 

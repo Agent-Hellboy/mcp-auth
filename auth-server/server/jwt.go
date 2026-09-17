@@ -28,7 +28,7 @@ func NewKeyManager(path string) (*KeyManager, error) {
 		if err != nil {
 			return nil, fmt.Errorf("generate local signing key: %w", err)
 		}
-		return &KeyManager{PrivateKey: key, KeyID: "local-generated"}, nil
+		return &KeyManager{PrivateKey: key, KeyID: keyThumbprint(key)}, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -47,7 +47,7 @@ func NewKeyManager(path string) (*KeyManager, error) {
 	if key == nil {
 		return nil, errors.New("signing key is not an RSA private key")
 	}
-	return &KeyManager{PrivateKey: key, KeyID: "configured-rsa"}, nil
+	return &KeyManager{PrivateKey: key, KeyID: keyThumbprint(key)}, nil
 }
 
 func (k *KeyManager) JWKS() map[string]any {
@@ -61,11 +61,11 @@ func (k *KeyManager) JWKS() map[string]any {
 
 func (k *KeyManager) Sign(issuer, subject, resource string, scopes []string, ttl time.Duration, nonce string) (string, error) {
 	now := time.Now().UTC()
-	claims := map[string]any{"iss": issuer, "sub": subject, "aud": resource, "iat": now.Unix(), "exp": now.Add(ttl).Unix(), "jti": randomID(), "scope": joinScopes(scopes)}
+	claims := map[string]any{"iss": issuer, "sub": subject, "aud": resource, "iat": now.Unix(), "nbf": now.Unix(), "exp": now.Add(ttl).Unix(), "jti": randomID(), "scope": joinScopes(scopes)}
 	if nonce != "" {
 		claims["nonce"] = nonce
 	}
-	header := map[string]any{"typ": "JWT", "alg": "RS256", "kid": k.KeyID}
+	header := map[string]any{"typ": "at+jwt", "alg": "RS256", "kid": k.KeyID}
 	headEncoded := base64.RawURLEncoding.EncodeToString(mustJSON(header))
 	claimEncoded := base64.RawURLEncoding.EncodeToString(mustJSON(claims))
 	message := []byte(headEncoded + "." + claimEncoded)
@@ -132,3 +132,12 @@ func randomID() string {
 }
 
 func joinScopes(scopes []string) string { return strings.Join(scopes, " ") }
+
+func keyThumbprint(key *rsa.PrivateKey) string {
+	public := key.PublicKey
+	canonical := fmt.Sprintf(`{"e":"%s","kty":"RSA","n":"%s"}`,
+		base64.RawURLEncoding.EncodeToString(big.NewInt(int64(public.E)).Bytes()),
+		base64.RawURLEncoding.EncodeToString(public.N.Bytes()))
+	digest := sha256.Sum256([]byte(canonical))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
+}
