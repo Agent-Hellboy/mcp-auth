@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/example/mcp-auth/auth-server/server"
+	"github.com/Agent-Hellboy/mcp-auth/auth-server/server"
 )
 
 func main() {

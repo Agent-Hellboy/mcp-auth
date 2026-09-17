@@ -12,4 +12,6 @@ coverage.xml
 .env
 *.pem
 *.key
+go.work
+go.work.sum
 graphify-out/

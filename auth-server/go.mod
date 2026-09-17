@@ -1,4 +1,4 @@
-module github.com/example/mcp-auth/auth-server
+module github.com/Agent-Hellboy/mcp-auth/auth-server
 
 go 1.26
 

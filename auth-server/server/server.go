@@ -43,7 +43,7 @@ func NewServer(config Config, store Store, identityProvider IdentityProvider, ex
 }
 
 func NewServerWithKeyProvider(config Config, store Store, identityProvider IdentityProvider, exchanger TokenExchanger, keyProvider KeyProvider, auditWriter io.Writer) (*Server, error) {
-	if config.Issuer == "" || config.Resource == "" {
+	if config.Issuer == "" || len(config.configuredResources()) == 0 {
 		return nil, errors.New("issuer and resource are required")
 	}
 	if store == nil {
@@ -104,7 +104,8 @@ func (s *Server) authorizationMetadata(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) protectedResourceMetadata(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"resource": s.Config.Resource, "authorization_servers": []string{s.Config.Issuer}, "scopes_supported": s.Config.AllowedScopes})
+	resources := s.Config.configuredResources()
+	writeJSON(w, http.StatusOK, map[string]any{"resource": resources[0], "resources": resources, "authorization_servers": []string{s.Config.Issuer}, "scopes_supported": s.Config.AllowedScopes})
 }
 
 func (s *Server) jwks(w http.ResponseWriter, r *http.Request) {
@@ -255,10 +256,11 @@ func (s *Server) parseAuthorizationRequest(r *http.Request) (AuthorizationReques
 	if !contains(client.RedirectURIs, request.RedirectURI) || !validRedirect(request.RedirectURI) {
 		return request, fmt.Errorf("redirect_uri is not registered")
 	}
-	if request.Resource == "" {
-		request.Resource = s.Config.Resource
+	resources := s.Config.configuredResources()
+	if request.Resource == "" && len(resources) == 1 {
+		request.Resource = resources[0]
 	}
-	if request.Resource != s.Config.Resource {
+	if !contains(resources, request.Resource) {
 		return request, fmt.Errorf("resource is not recognized")
 	}
 	for _, scope := range request.Scope {
@@ -311,7 +313,7 @@ func (s *Server) authorizationCodeToken(w http.ResponseWriter, r *http.Request) 
 		oauthError(w, http.StatusBadRequest, "invalid_target")
 		return
 	}
-	s.issueTokens(w, code.ClientID, code.Subject, code.Scope, resource)
+	s.issueTokens(w, r.Context(), code.ClientID, code.Subject, code.Scope, resource, "")
 }
 
 func (s *Server) refreshTokenToken(w http.ResponseWriter, r *http.Request) {
@@ -319,7 +321,7 @@ func (s *Server) refreshTokenToken(w http.ResponseWriter, r *http.Request) {
 	token, err := s.Store.ConsumeRefreshToken(old, s.now())
 	if err != nil {
 		if errors.Is(err, ErrAlreadyUsed) {
-			_ = s.Store.RevokeRefreshToken(old)
+			_ = s.Store.RevokeRefreshFamily(old)
 		}
 		oauthError(w, http.StatusBadRequest, "invalid_grant")
 		return
@@ -328,17 +330,23 @@ func (s *Server) refreshTokenToken(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}
-	s.issueTokens(w, token.ClientID, token.Subject, token.Scope, token.Resource)
+	s.issueTokens(w, r.Context(), token.ClientID, token.Subject, token.Scope, token.Resource, token.FamilyID)
 }
 
-func (s *Server) issueTokens(w http.ResponseWriter, clientID, subject string, scopes []string, resource string) {
-	access, err := s.KeyProvider.Sign(context.Background(), s.Config.Issuer, subject, resource, scopes, s.Config.AccessTokenTTL, "")
+func (s *Server) issueTokens(w http.ResponseWriter, ctx context.Context, clientID, subject string, scopes []string, resource, familyID string) {
+	access, err := s.KeyProvider.Sign(ctx, s.Config.Issuer, subject, resource, scopes, s.Config.AccessTokenTTL, "")
 	if err != nil {
 		oauthError(w, http.StatusInternalServerError, "server_error")
 		return
 	}
 	refresh := randomID()
-	_ = s.Store.SaveRefreshToken(RefreshToken{ValueHash: HashSecret(refresh), ClientID: clientID, Subject: subject, Scope: scopes, Resource: resource, ExpiresAt: s.now().Add(s.Config.RefreshTokenTTL)})
+	if familyID == "" {
+		familyID = randomID()
+	}
+	if err := s.Store.SaveRefreshToken(RefreshToken{ValueHash: HashSecret(refresh), FamilyID: familyID, ClientID: clientID, Subject: subject, Scope: scopes, Resource: resource, ExpiresAt: s.now().Add(s.Config.RefreshTokenTTL)}); err != nil {
+		oauthError(w, http.StatusInternalServerError, "server_error")
+		return
+	}
 	s.Audit.Event("token_issued", "success", map[string]any{"client_id": clientID, "subject": subject, "resource": resource})
 	writeJSON(w, http.StatusOK, map[string]any{"access_token": access, "token_type": "Bearer", "expires_in": int(s.Config.AccessTokenTTL.Seconds()), "refresh_token": refresh, "scope": strings.Join(scopes, " ")})
 }

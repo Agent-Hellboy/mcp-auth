@@ -1,10 +1,14 @@
 package mcpauth
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 )
 
 type ProtectedResourceMetadata struct {
@@ -27,15 +31,40 @@ func DiscoverProtectedResource(client *http.Client, metadataURL string) (Protect
 	return metadata, err
 }
 func DiscoverAuthorizationServer(client *http.Client, issuer string) (AuthorizationServerMetadata, error) {
+	return DiscoverAuthorizationServerContext(context.Background(), client, issuer)
+}
+func DiscoverAuthorizationServerContext(ctx context.Context, client *http.Client, issuer string) (AuthorizationServerMetadata, error) {
 	var metadata AuthorizationServerMetadata
-	err := getJSON(client, strings.TrimRight(issuer, "/")+"/.well-known/oauth-authorization-server", &metadata)
-	return metadata, err
+	parsed, err := url.Parse(issuer)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return metadata, fmt.Errorf("invalid issuer URL")
+	}
+	endpoint := wellKnownURL(parsed, "oauth-authorization-server")
+	err = getJSONContext(ctx, client, endpoint, &metadata)
+	if err != nil {
+		metadata = AuthorizationServerMetadata{}
+		err = getJSONContext(ctx, client, wellKnownURL(parsed, "openid-configuration"), &metadata)
+	}
+	if err != nil {
+		return metadata, err
+	}
+	if metadata.Issuer != strings.TrimRight(issuer, "/") {
+		return AuthorizationServerMetadata{}, fmt.Errorf("authorization-server metadata issuer mismatch")
+	}
+	return metadata, nil
 }
 func getJSON(client *http.Client, endpoint string, target any) error {
+	return getJSONContext(context.Background(), client, endpoint, target)
+}
+func getJSONContext(ctx context.Context, client *http.Client, endpoint string, target any) error {
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: 10 * time.Second}
 	}
-	response, err := client.Get(endpoint)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return err
 	}
@@ -43,8 +72,20 @@ func getJSON(client *http.Client, endpoint string, target any) error {
 	if response.StatusCode/100 != 2 {
 		return fmt.Errorf("metadata request returned %d", response.StatusCode)
 	}
-	if err := json.NewDecoder(response.Body).Decode(target); err != nil {
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(target); err != nil {
 		return err
 	}
 	return nil
+}
+
+func wellKnownURL(issuer *url.URL, name string) string {
+	copy := *issuer
+	path := strings.Trim(copy.Path, "/")
+	if path == "" {
+		copy.Path = "/.well-known/" + name
+	} else {
+		copy.Path = "/.well-known/" + name + "/" + path
+	}
+	copy.RawPath = ""
+	return strings.TrimRight(copy.String(), "/")
 }
