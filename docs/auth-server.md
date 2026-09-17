@@ -135,6 +135,14 @@ supplied indirectly as `client_id_env`; set exactly one of the two. All
 provider-specific behavior is behind `IdentityProvider` and `TokenExchanger`
 interfaces.
 
+For a provider behind the same Kubernetes cluster, `token_endpoint_internal`
+may point to its private Service URL so the auth server does not hairpin through
+the public ingress. Keep the normal public `token_endpoint` for discovery and
+set `token_endpoint_server_name` to the hostname covered by the provider's TLS
+certificate. `jwks_uri_internal` can be set the same way when JWKS is not
+reachable through the public ingress from the auth pod. The internal endpoints
+must still use HTTPS in production.
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -280,15 +288,21 @@ internal network — and only the browser-facing ones may be rewritten:
 {
   "issuer": "http://localhost:6350/realms/mcp",
   "authorization_endpoint": "http://localhost:6350/realms/mcp/protocol/openid-connect/auth",
-  "token_endpoint": "http://keycloak.internal:6350/realms/mcp/protocol/openid-connect/token",
-  "jwks_uri": "http://keycloak.internal:6350/realms/mcp/protocol/openid-connect/certs"
+  "token_endpoint": "https://keycloak.example.com/realms/mcp/protocol/openid-connect/token",
+  "jwks_uri": "https://keycloak.example.com/realms/mcp/protocol/openid-connect/certs",
+  "token_endpoint_internal": "https://keycloak.mcp-sentinel.svc.cluster.local:8443/realms/mcp/protocol/openid-connect/token",
+  "jwks_uri_internal": "https://keycloak.mcp-sentinel.svc.cluster.local:8443/realms/mcp/protocol/openid-connect/certs",
+  "token_endpoint_server_name": "keycloak.example.com"
 }
 ```
 
 `issuer` and `authorization_endpoint` must be what the **browser** resolves,
 because `issuer` is compared against the ID token's `iss` claim and the user is
 redirected to `authorization_endpoint`. `token_endpoint` and `jwks_uri` are
-back-channel calls this server makes itself, so they take the internal name.
+the public/discovered values. When public ingress is not reachable from the
+auth pod, `token_endpoint_internal` and `jwks_uri_internal` override only the
+back-channel URLs. `token_endpoint_server_name` controls TLS hostname
+verification for those internal HTTPS calls.
 
 Leaving the back-channel endpoints blank triggers discovery instead, which is
 simpler — but discovery resolves them relative to `issuer`, so it only works

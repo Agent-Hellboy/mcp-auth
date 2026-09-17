@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +20,13 @@ type ConnectorConfig struct {
 	Issuer                string `json:"issuer"`
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
-	JWKSURI               string `json:"jwks_uri"`
+	// TokenEndpointInternal is an optional private endpoint used for
+	// server-side code exchange. It avoids public-ingress hairpinning while
+	// TokenEndpoint remains the standards-discovered/public endpoint.
+	TokenEndpointInternal   string `json:"token_endpoint_internal"`
+	TokenEndpointServerName string `json:"token_endpoint_server_name"`
+	JWKSURI                 string `json:"jwks_uri"`
+	JWKSURIInternal         string `json:"jwks_uri_internal"`
 	// UserinfoEndpoint is optional. When set (directly or via discovery),
 	// it's used to supplement ID token claims for the identity_claims
 	// fallback list when none of them are present in the ID token itself.
@@ -88,6 +95,26 @@ func (c ConnectorConfig) validate(name string, allowInsecure bool) error {
 			return fmt.Errorf("connector %q has non-HTTPS %s", name, field)
 		}
 	}
+	if c.TokenEndpointInternal != "" {
+		parsed, err := url.Parse(c.TokenEndpointInternal)
+		validScheme := parsed.Scheme == "https" || (allowInsecure && parsed.Scheme == "http")
+		if err != nil || !validScheme || parsed.Host == "" {
+			return fmt.Errorf("connector %q has non-HTTPS token_endpoint_internal", name)
+		}
+		if c.TokenEndpointServerName == "" {
+			return fmt.Errorf("connector %q requires token_endpoint_server_name with token_endpoint_internal", name)
+		}
+	}
+	if c.JWKSURIInternal != "" {
+		parsed, err := url.Parse(c.JWKSURIInternal)
+		validScheme := parsed.Scheme == "https" || (allowInsecure && parsed.Scheme == "http")
+		if err != nil || !validScheme || parsed.Host == "" {
+			return fmt.Errorf("connector %q has non-HTTPS jwks_uri_internal", name)
+		}
+		if c.TokenEndpointServerName == "" {
+			return fmt.Errorf("connector %q requires token_endpoint_server_name with jwks_uri_internal", name)
+		}
+	}
 	if c.UserinfoEndpoint != "" {
 		parsed, err := url.Parse(c.UserinfoEndpoint)
 		validScheme := parsed.Scheme == "https" || (allowInsecure && parsed.Scheme == "http")
@@ -140,6 +167,33 @@ func (c ConnectorConfig) validate(name string, allowInsecure bool) error {
 		}
 	}
 	return nil
+}
+
+func (c ConnectorConfig) tokenEndpoint() string {
+	if c.TokenEndpointInternal != "" {
+		return c.TokenEndpointInternal
+	}
+	return c.TokenEndpoint
+}
+
+func (c ConnectorConfig) jwksURI() string {
+	if c.JWKSURIInternal != "" {
+		return c.JWKSURIInternal
+	}
+	return c.JWKSURI
+}
+
+func (c ConnectorConfig) httpClient() *http.Client {
+	if c.TokenEndpointInternal == "" || c.TokenEndpointServerName == "" {
+		return http.DefaultClient
+	}
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return http.DefaultClient
+	}
+	transport := base.Clone()
+	transport.TLSClientConfig = &tls.Config{ServerName: c.TokenEndpointServerName, MinVersion: tls.VersionTLS12}
+	return &http.Client{Transport: transport, Timeout: http.DefaultClient.Timeout}
 }
 
 // resolvedAllowedAlgorithms returns the configured algorithm allowlist,

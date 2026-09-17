@@ -72,7 +72,7 @@ func NewOIDCIdentityProvider(connector ConnectorConfig, callbackURL string, allo
 	if err != nil {
 		return nil, err
 	}
-	return &OIDCIdentityProvider{Connector: connector, Client: http.DefaultClient, CallbackURL: callbackURL, Secret: secret, ClientID: clientID}, nil
+	return &OIDCIdentityProvider{Connector: connector, Client: connector.httpClient(), CallbackURL: callbackURL, Secret: secret, ClientID: clientID}, nil
 }
 
 func (p *OIDCIdentityProvider) Authenticate(context.Context, IdentityRequest) (Identity, error) {
@@ -261,7 +261,7 @@ func newTokenEndpointRequest(ctx context.Context, connector ConnectorConfig, cli
 	if connector.TokenEndpointAuthMethod == "client_secret_post" {
 		form.Set("client_secret", secret)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, connector.TokenEndpoint, strings.NewReader(form.Encode()))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, connector.tokenEndpoint(), strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("create token endpoint request: %w", err)
 	}
@@ -287,7 +287,7 @@ func NewOIDCTokenExchanger(connector ConnectorConfig, allowInsecure bool) (*OIDC
 	if err != nil {
 		return nil, err
 	}
-	return &OIDCTokenExchanger{Connector: connector, Client: http.DefaultClient, Secret: secret}, nil
+	return &OIDCTokenExchanger{Connector: connector, Client: connector.httpClient(), Secret: secret}, nil
 }
 
 func (e *OIDCTokenExchanger) Exchange(ctx context.Context, exchange ExchangeRequest) (ExchangeResponse, error) {
@@ -374,7 +374,7 @@ func (p *OIDCIdentityProvider) verifyIDToken(ctx context.Context, token, expecte
 	if err := decodeJWTPart(parts[1], &claims); err != nil {
 		return nil, errors.New("OIDC ID token claims are invalid")
 	}
-	key, err := p.jwks.resolve(ctx, p.Client, p.Connector.JWKSURI, header.KeyID)
+	key, err := p.jwks.resolve(ctx, p.Client, p.Connector.jwksURI(), header.KeyID)
 	if err != nil {
 		return nil, err
 	}
