@@ -40,11 +40,24 @@ go run ./auth-server/cmd/auth-server
 ```
 
 Release tags are also published to Docker Hub as
-`princekrroshan01/mcp-auth-server:<tag>`:
+[`princekrroshan01/mcp-auth-server`](https://hub.docker.com/r/princekrroshan01/mcp-auth-server),
+a minimal non-root image containing only the Go authorization server:
 
 ```bash
-docker pull princekrroshan01/mcp-auth-server:latest
+docker run --rm -p 8080:8080 \
+  -e MCP_AUTH_ISSUER=http://localhost:8080 \
+  -e MCP_AUTH_RESOURCES=http://localhost:8081/mcp \
+  -e MCP_AUTH_LOCAL_DEVELOPMENT=true \
+  -e MCP_AUTH_REQUIRE_HTTPS=false \
+  princekrroshan01/mcp-auth-server:0.2.0
 ```
+
+That command is local-development-only: it disables TLS and the upstream
+identity provider. A deployment pins an immutable tag or digest, serves HTTPS,
+mounts a persistent signing key and durable store, and configures a connector.
+`latest` is published for non-prerelease versions, but pin a version or digest
+in production. Never bake client secrets, signing keys, or administrator
+credentials into an image or a public Dockerfile.
 
 Copy `.env.example` to a local, untracked `.env` only if useful. The server reads `MCP_AUTH_*` variables; production should inject them through the deployment environment or a secret manager.
 
