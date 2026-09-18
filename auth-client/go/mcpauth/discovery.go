@@ -11,10 +11,14 @@ import (
 	"time"
 )
 
+// ProtectedResourceMetadata is the RFC 9728 document. The same type is parsed
+// by clients and served by resource servers (see metadata.go), so the two can
+// never disagree about the shape.
 type ProtectedResourceMetadata struct {
-	Resource             string   `json:"resource"`
-	AuthorizationServers []string `json:"authorization_servers"`
-	ScopesSupported      []string `json:"scopes_supported"`
+	Resource               string   `json:"resource"`
+	AuthorizationServers   []string `json:"authorization_servers"`
+	BearerMethodsSupported []string `json:"bearer_methods_supported,omitempty"`
+	ScopesSupported        []string `json:"scopes_supported,omitempty"`
 }
 type AuthorizationServerMetadata struct {
 	Issuer                                     string `json:"issuer"`
