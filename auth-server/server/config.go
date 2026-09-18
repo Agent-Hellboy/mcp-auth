@@ -29,12 +29,18 @@ type Config struct {
 	AuthorizationResponseIssuer bool
 	LocalTokenExchange          bool
 	RequireHTTPS                bool
-	AllowInsecureConnectors     bool
-	ConnectorsFile              string
-	ConnectorName               string
-	StoreBackend                string
-	DatabaseURL                 string
-	ResourceClientsFile         string
+	// TrustProxyTLS lets the deployment declare that a trusted reverse
+	// proxy terminates TLS in front of this process and overwrites the
+	// forwarded headers. Only then is X-Forwarded-Proto evidence of
+	// anything: it is client-supplied, so trusting it unconditionally
+	// turns RequireHTTPS into a header any caller can set.
+	TrustProxyTLS           bool
+	AllowInsecureConnectors bool
+	ConnectorsFile          string
+	ConnectorName           string
+	StoreBackend            string
+	DatabaseURL             string
+	ResourceClientsFile     string
 	// AllowedClientRedirectURIs restricts dynamic client registration
 	// (POST /register) to these exact redirect_uris when non-empty, in
 	// addition to validRedirect's scheme/host checks. It is populated from
@@ -185,6 +191,7 @@ func ConfigFromEnv() Config {
 		AuthorizationResponseIssuer: boolEnv("MCP_AUTH_AUTHORIZATION_RESPONSE_ISS", true),
 		LocalTokenExchange:          boolEnv("MCP_AUTH_LOCAL_TOKEN_EXCHANGE", false),
 		RequireHTTPS:                boolEnv("MCP_AUTH_REQUIRE_HTTPS", true),
+		TrustProxyTLS:               boolEnv("MCP_AUTH_TRUST_PROXY_TLS", false),
 		AllowInsecureConnectors:     boolEnv("MCP_AUTH_ALLOW_INSECURE_CONNECTORS", false),
 		ConnectorsFile:              os.Getenv("MCP_AUTH_CONNECTORS_FILE"),
 		ConnectorName:               os.Getenv("MCP_AUTH_CONNECTOR"),

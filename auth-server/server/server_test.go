@@ -812,3 +812,41 @@ func getMetadata(t *testing.T, instance *Server, path string) (int, map[string]a
 	_ = json.Unmarshal(recorder.Body.Bytes(), &body)
 	return recorder.Code, body
 }
+
+// X-Forwarded-Proto is set by the caller. Honouring it unconditionally turns
+// RequireHTTPS into a header anyone who can reach this process may set, which
+// is no guard at all — so it counts only when the deployment declares that a
+// trusted proxy terminates TLS and is the only route in.
+func TestHTTPSGuardIgnoresForwardedProtoUnlessProxyIsTrusted(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		trustProxy bool
+		forwarded  string
+		want       int
+	}{
+		"untrusted proxy, spoofed header": {false, "https", http.StatusBadRequest},
+		"untrusted proxy, no header":      {false, "", http.StatusBadRequest},
+		"trusted proxy, header present":   {true, "https", http.StatusOK},
+		"trusted proxy, header absent":    {true, "", http.StatusBadRequest},
+		"trusted proxy, header is http":   {true, "http", http.StatusBadRequest},
+	} {
+		t.Run(name, func(t *testing.T) {
+			instance := testServer(t)
+			instance.Config.RequireHTTPS = true
+			instance.Config.TrustProxyTLS = testCase.trustProxy
+
+			request := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+			if testCase.forwarded != "" {
+				request.Header.Set("X-Forwarded-Proto", testCase.forwarded)
+			}
+			recorder := httptest.NewRecorder()
+			instance.Handler().ServeHTTP(recorder, request)
+
+			if recorder.Code != testCase.want {
+				t.Fatalf("status = %d, want %d (body %s)", recorder.Code, testCase.want, recorder.Body.String())
+			}
+			if testCase.want == http.StatusBadRequest && !strings.Contains(recorder.Body.String(), "MCP_AUTH_TRUST_PROXY_TLS") {
+				t.Fatalf("rejection should name the setting that fixes it, got %s", recorder.Body.String())
+			}
+		})
+	}
+}

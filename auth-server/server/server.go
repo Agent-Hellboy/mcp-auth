@@ -684,13 +684,30 @@ func (s *Server) cors(next http.Handler) http.Handler {
 	})
 }
 
+// httpsOnly refuses plaintext requests when the deployment requires TLS.
+//
+// X-Forwarded-Proto is set by the caller, so it is only evidence that TLS was
+// terminated upstream when the deployment says a trusted proxy is the only way
+// in — MCP_AUTH_TRUST_PROXY_TLS. Without that, honouring the header would let
+// any caller that can reach this process satisfy RequireHTTPS by setting one
+// header, which is no guard at all.
+//
+// Operators running behind an ingress that terminates TLS must set
+// MCP_AUTH_TRUST_PROXY_TLS=true *and* ensure the proxy overwrites inbound
+// X-Forwarded-* headers and is the only route to this process.
 func (s *Server) httpsOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.Config.RequireHTTPS && r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
-			oauthError(w, http.StatusBadRequest, "https_required")
+		if !s.Config.RequireHTTPS || r.TLS != nil {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		if s.Config.TrustProxyTLS && r.Header.Get("X-Forwarded-Proto") == "https" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		oauthErrorWithDescription(w, http.StatusBadRequest, "https_required",
+			"this request arrived over plaintext HTTP; terminate TLS on this process, or set MCP_AUTH_TRUST_PROXY_TLS=true when a trusted proxy terminates it and is the only route in")
+		return
 	})
 }
 
@@ -701,6 +718,12 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 func oauthError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]string{"error": code})
+}
+
+// oauthErrorWithDescription adds the RFC 6749 error_description. Use it where a
+// bare code leaves the operator guessing at the cause.
+func oauthErrorWithDescription(w http.ResponseWriter, status int, code, description string) {
+	writeJSON(w, status, map[string]string{"error": code, "error_description": description})
 }
 func redirectError(w http.ResponseWriter, r *http.Request, request AuthorizationRequest, code, description, issuer string, includeIssuer bool) {
 	location, _ := url.Parse(request.RedirectURI)

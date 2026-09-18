@@ -60,6 +60,13 @@ Important settings:
   alone. Set to `silent` to disable it for a deployment that wants quieter logs. This is separate from the
   structured OAuth event audit log, which always runs and always redacts tokens/secrets/codes/keys/assertions.
 - `MCP_AUTH_RESOURCE`: canonical resource audience placed in `aud`.
+- `MCP_AUTH_TRUST_PROXY_TLS`: default `false`. Set `true` only when a trusted
+  reverse proxy terminates TLS in front of this process, overwrites inbound
+  `X-Forwarded-*` headers, and is the **only** route to it. `X-Forwarded-Proto`
+  is client-supplied, so without this the server ignores it and
+  `MCP_AUTH_REQUIRE_HTTPS` means real TLS on the listener. Turning it on
+  without restricting network access to the proxy lets any caller that can
+  reach the process satisfy the HTTPS requirement by setting one header.
 - `MCP_AUTH_RESOURCES`: comma-separated resource allow-list placed in `aud`; use this for multi-resource deployments.
 - `MCP_AUTH_RESOURCE`: legacy single-resource setting, retained for compatibility when `MCP_AUTH_RESOURCES` is unset.
 - `MCP_AUTH_PRIVATE_KEY_FILE`: PEM RSA key path. Local mode generates an ephemeral test key.
@@ -481,6 +488,10 @@ signing keys don't collide.
 ## Production checklist
 
 - Use an HTTPS issuer and canonical resource URI.
+- Terminate TLS on this process, or set `MCP_AUTH_TRUST_PROXY_TLS=true` **and**
+  restrict network access so only the terminating proxy can reach it. The
+  setting is a claim about your topology; a NetworkPolicy or equivalent is what
+  makes the claim true.
 - Use a secret-managed persistent signing key and a planned rotation process.
 - Replace `MemoryStore` with a transactional durable implementation.
 - Integrate a real `IdentityProvider` and define consent/session policy.
