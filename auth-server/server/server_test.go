@@ -741,3 +741,74 @@ func TestAuthorizationMetadataSatisfiesOIDCRequiredFields(t *testing.T) {
 		}
 	}
 }
+
+// RFC 9728 documents describe one resource. A multi-resource deployment that
+// answers the bare well-known path with an arbitrary entry hands the client an
+// audience it did not ask for, and every token it then gets is rejected by the
+// server it meant to call.
+func TestProtectedResourceMetadataIsPerResource(t *testing.T) {
+	instance := multiResourceServer(t)
+
+	if code, _ := getMetadata(t, instance, "/.well-known/oauth-protected-resource"); code != http.StatusNotFound {
+		t.Fatalf("bare path with two resources = %d, want 404", code)
+	}
+	if code, _ := getMetadata(t, instance, "/.well-known/oauth-protected-resource/nope/mcp"); code != http.StatusNotFound {
+		t.Fatalf("unknown resource = %d, want 404", code)
+	}
+
+	for path, want := range map[string]string{
+		"/ping/mcp": "https://mcp.example.com/ping/mcp",
+		"/echo/mcp": "https://mcp.example.com/echo/mcp",
+	} {
+		code, body := getMetadata(t, instance, "/.well-known/oauth-protected-resource"+path)
+		if code != http.StatusOK {
+			t.Fatalf("%s = %d, want 200", path, code)
+		}
+		if body["resource"] != want {
+			t.Fatalf("%s resource = %v, want %s", path, body["resource"], want)
+		}
+		if _, present := body["resources"]; present {
+			t.Fatalf("%s still advertises the non-standard resources member: %v", path, body)
+		}
+		if servers, _ := body["authorization_servers"].([]any); len(servers) != 1 {
+			t.Fatalf("%s authorization_servers = %v", path, body["authorization_servers"])
+		}
+	}
+}
+
+// A single-resource deployment stays answerable at the bare path.
+func TestProtectedResourceMetadataBarePathForSingleResource(t *testing.T) {
+	code, body := getMetadata(t, testServer(t), "/.well-known/oauth-protected-resource")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if body["resource"] != "http://localhost:8081/mcp" {
+		t.Fatalf("resource = %v", body["resource"])
+	}
+	scopes, _ := body["scopes_supported"].([]any)
+	if len(scopes) != 1 || scopes[0] != "tools:read" {
+		t.Fatalf("scopes_supported = %v", body["scopes_supported"])
+	}
+	if methods, _ := body["bearer_methods_supported"].([]any); len(methods) != 1 || methods[0] != "header" {
+		t.Fatalf("bearer_methods_supported = %v", body["bearer_methods_supported"])
+	}
+}
+
+func multiResourceServer(t *testing.T) *Server {
+	t.Helper()
+	config := Config{Issuer: "http://localhost:8080", Resources: []string{"https://mcp.example.com/ping/mcp", "https://mcp.example.com/echo/mcp"}, AccessTokenTTL: time.Minute, RefreshTokenTTL: time.Hour, AuthorizationCodeTTL: time.Minute, AllowedScopes: []string{"tools:read"}, RegistrationEnabled: true, LocalDevelopment: true, LocalSubject: "test-user"}
+	instance, err := NewServer(config, NewMemoryStore(), LocalIdentityProvider{Subject: "test-user"}, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return instance
+}
+
+func getMetadata(t *testing.T, instance *Server, path string) (int, map[string]any) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+	var body map[string]any
+	_ = json.Unmarshal(recorder.Body.Bytes(), &body)
+	return recorder.Code, body
+}

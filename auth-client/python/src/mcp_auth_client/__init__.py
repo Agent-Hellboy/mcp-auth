@@ -1,7 +1,12 @@
 """Reusable OAuth helpers for Python MCP resource servers."""
 
 from .boundaries import DownstreamToken, MCPClientToken, ResourceServerCredential
-from .challenge import ProtectedResourceChallenge, parse_www_authenticate, unauthorized_headers
+from .challenge import (
+    ProtectedResourceChallenge,
+    parse_www_authenticate,
+    unauthorized_headers,
+    unauthorized_headers_for_error,
+)
 from .discovery import discover_authorization_server, discover_protected_resource
 from .fastmcp import RemoteAuthProvider
 from .http import AsyncHTTPClient
@@ -12,6 +17,7 @@ from .integration import (
     build_remote_auth,
     public_base_url,
 )
+from .metadata import protected_resource_metadata, required_scopes
 from .models import AuthorizationServerConfig, ProtectedResourceConfig
 from .oauth import OAuthState, authorization_url
 from .token_exchange import (
@@ -41,10 +47,13 @@ __all__ = [
     "TokenVerificationError",
     "discover_authorization_server",
     "discover_protected_resource",
+    "protected_resource_metadata",
+    "required_scopes",
     "parse_www_authenticate",
     "authorization_url",
     "build_exchange_client",
     "build_remote_auth",
     "public_base_url",
     "unauthorized_headers",
+    "unauthorized_headers_for_error",
 ]

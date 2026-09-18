@@ -68,6 +68,75 @@ disable it only for a controlled local test transport.
 
 Import `github.com/Agent-Hellboy/mcp-auth/auth-client/go/mcpauth`, configure `JWTVerifier`, and use `DiscoverProtectedResource`, `DiscoverAuthorizationServer`, `ParseWWWAuthenticate`, and `TokenExchangeClient`. The Go SDK uses the standard library and supports bounded token caching. Install the client module at the `auth-client/go/v0.1.0` release tag.
 
+## Publishing protected resource metadata
+
+Every MCP resource server must publish an RFC 9728 document saying which
+authorization servers issue its tokens. The MCP authorization spec requires the
+`authorization_servers` field; in practice `scopes_supported` matters just as
+much, because it is the only thing that tells a client which scope to request.
+
+Omit it and the failure is quiet and misleading: the client asks for no scope,
+the authorization server issues a token with an empty `scope`, and every call
+is refused with `403`. Nothing in that exchange says a scope was missing, so it
+reads as broken authentication. Cursor surfaces it as
+`Server returned 403 after trying upscoping` — it tried to escalate and had
+nothing to escalate to.
+
+Both SDKs therefore derive the document from the verifier that guards the
+resource, so the advertised scopes cannot drift from the enforced ones.
+
+**Go**
+
+```go
+verifier := &mcpauth.JWTVerifier{
+    JWKSURL:        jwksURL,
+    Issuer:         issuer,
+    Audience:       resource,
+    RequiredScopes: map[string]bool{"tools:read": true},
+}
+
+metadata := mcpauth.ProtectedResourceMetadataHandler(verifier, resource, issuer)
+mux.Handle("/.well-known/oauth-protected-resource"+mcpPath, metadata)
+mux.Handle("/.well-known/oauth-protected-resource", metadata)
+mux.Handle(mcpPath, mcpauth.RequireToken(verifier, mcpauth.ResourceMetadata{URL: metadataURL}, handler))
+```
+
+**Python**
+
+```python
+verifier = JWTVerifier(
+    jwks_uri=jwks_url, issuer=issuer, audience=resource, required_scopes={"tools:read"}
+)
+document = protected_resource_metadata(verifier, resource, issuer)
+```
+
+Mount it on both the bare well-known path and the path-suffixed form: clients
+build the URL from the resource identifier, so a resource at `/ping/mcp` is
+looked up at `/.well-known/oauth-protected-resource/ping/mcp`.
+
+On FastMCP, `build_remote_auth(..., scopes_supported=[...])` already serves the
+document; pass the same scopes the verifier enforces.
+
+### Challenges
+
+`RequireToken` (Go) emits both challenges for you. Serving the HTTP layer
+yourself means emitting them yourself:
+
+| Situation | Status | Helper |
+|---|---|---|
+| No or malformed `Authorization` header | 401 | `unauthorized_headers(metadata_url)` |
+| Token fails signature, `iss`, `aud`, or `exp` | 401 | `unauthorized_headers_for_error(..., "invalid_token", ...)` |
+| Token is valid but lacks a required scope | 403 | `unauthorized_headers_for_error(..., "insufficient_scope", ...)` |
+
+The `insufficient_scope` code is what separates "you may retry with more scope"
+from "this token is rejected". Without it a client cannot tell the two apart and
+will not retry.
+
+A runnable example of the plain (non-FastMCP) Python path, including both
+challenges and the metadata document, lives in the MCP Runtime repository at
+`examples/mcp-auth-sdk-ping-py`; its Go counterpart is
+`examples/mcp-auth-sdk-ping`.
+
 ## Discovery and third-party providers
 
 Resource servers should publish Protected Resource Metadata with `authorization_servers`. Clients then fetch `/.well-known/oauth-authorization-server` from the selected issuer. The SDK metadata dataclasses and structs accept provider-neutral endpoints, optional DCR, optional revocation, and provider-specific scope sets without changing MCP tools.

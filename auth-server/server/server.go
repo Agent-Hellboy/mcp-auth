@@ -85,6 +85,10 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /.well-known/openid-configuration/"+issuerPath, s.authorizationMetadata)
 	}
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource", s.protectedResourceMetadata)
+	// RFC 9728 section 3.1 forms the metadata URL by inserting the well-known
+	// segment before the resource's path, so a resource at /ping/mcp is
+	// described at /.well-known/oauth-protected-resource/ping/mcp.
+	mux.HandleFunc("GET /.well-known/oauth-protected-resource/{path...}", s.protectedResourceMetadata)
 	mux.HandleFunc("GET /.well-known/jwks.json", s.jwks)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
@@ -157,10 +161,55 @@ func (s *Server) authorizationMetadata(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (s *Server) protectedResourceMetadata(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Cache-Control", "max-age=3600")
+// protectedResourceMetadata serves RFC 9728 metadata for one resource.
+//
+// The document is per-resource: "resource" is a single audience a client will
+// bind its token to. Answering the bare well-known path with an arbitrary entry
+// from a multi-resource deployment hands the client the wrong audience and its
+// tokens are then rejected by the server it meant to call, so the bare path is
+// only answered when the deployment has exactly one resource. Everything else
+// must address a resource by its path.
+//
+// Canonically this document belongs to the resource server, which knows the
+// scopes it enforces. This endpoint is a convenience for deployments that front
+// the authorization server and the resource on one host.
+func (s *Server) protectedResourceMetadata(w http.ResponseWriter, r *http.Request) {
 	resources := s.Config.configuredResources()
-	writeJSON(w, http.StatusOK, map[string]any{"resource": resources[0], "resources": resources, "authorization_servers": []string{s.Config.Issuer}, "scopes_supported": s.Config.AllowedScopes})
+	resource, ok := matchResource(resources, r.PathValue("path"))
+	if !ok {
+		oauthError(w, http.StatusNotFound, "invalid_request")
+		return
+	}
+	w.Header().Set("Cache-Control", "max-age=3600")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"resource":                 resource,
+		"authorization_servers":    []string{s.Config.Issuer},
+		"bearer_methods_supported": []string{"header"},
+		"scopes_supported":         s.Config.AllowedScopes,
+	})
+}
+
+// matchResource resolves the resource a metadata request addresses. An empty
+// path is the bare well-known URL, which is unambiguous only for a
+// single-resource deployment.
+func matchResource(resources []string, path string) (string, bool) {
+	if path == "" {
+		if len(resources) == 1 {
+			return resources[0], true
+		}
+		return "", false
+	}
+	want := "/" + strings.Trim(path, "/")
+	for _, resource := range resources {
+		parsed, err := url.Parse(resource)
+		if err != nil {
+			continue
+		}
+		if "/"+strings.Trim(parsed.Path, "/") == want {
+			return resource, true
+		}
+	}
+	return "", false
 }
 
 func (s *Server) jwks(w http.ResponseWriter, r *http.Request) {

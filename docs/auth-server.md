@@ -101,10 +101,33 @@ The Dockerfile builds a static, non-root image. Put TLS termination in a trusted
 
 The server publishes:
 
-- `/.well-known/oauth-authorization-server`
-- `/.well-known/oauth-protected-resource`
+- `/.well-known/oauth-authorization-server` and `/.well-known/openid-configuration`
+- `/.well-known/oauth-protected-resource[/<resource path>]`
 - `/.well-known/jwks.json`
 - `/healthz` and `/readyz`
+
+When the issuer is mounted under a path — `https://auth.example.com/mcp-auth` —
+the authorization-server documents are **also** served at the RFC 8414 §3.1
+path-insertion location, `/.well-known/oauth-authorization-server/mcp-auth`.
+That is the URL clients actually request; serving only
+`<issuer>/.well-known/oauth-authorization-server` makes discovery 404.
+
+The protected-resource document is per resource. With several resources
+configured, address one by its path — resource
+`https://mcp.example.com/ping/mcp` is described at
+`/.well-known/oauth-protected-resource/ping/mcp` — and the bare path returns
+404, because answering it with an arbitrary entry would hand the client an
+audience it did not ask for and its tokens would then be rejected by the server
+it meant to call. With exactly one resource configured the bare path is
+unambiguous and is served.
+
+This endpoint is a convenience for deployments that put the authorization
+server and the resource on one host. Canonically the document belongs to the
+**resource server**, which is the only party that knows which scopes it
+enforces; serve it from the client SDK instead
+(`mcpauth.ProtectedResourceMetadataHandler` in Go,
+`protected_resource_metadata` in Python). See
+[auth-client.md](auth-client.md#publishing-protected-resource-metadata).
 
 The configured RSA key signs RS256 access tokens. For key rotation, deploy a key provider that can publish the current and previous public keys in JWKS, issue tokens with a new `kid`, and remove old keys only after the maximum access-token lifetime plus clock-skew window. The sample server has one configured key slot and should be extended with a durable rotation provider before production.
 
@@ -125,6 +148,19 @@ schemes broadly is safe because PKCE `S256` is mandatory and `/authorize`
 matches the registered `redirect_uri` exactly; a deployment that wants to
 restrict which clients may register sets the connector's
 `allowed_client_redirect_uris`, which `/register` enforces when non-empty.
+
+**A deliberate deviation from the MCP authorization spec.** That spec states
+that "all redirect URIs MUST be either localhost or use HTTPS". Read literally
+it excludes private-use schemes, and therefore excludes every desktop MCP
+client that registers one — Cursor's `cursor://…` and Claude Desktop's
+`claude://…` callbacks would both be refused, and neither could complete a
+flow. RFC 8252 §7.1 defines private-use schemes precisely for native apps, and
+the same document is what the spec's own native-app guidance points at, so this
+server follows RFC 8252. The security property the spec's rule protects —
+an authorization code cannot be redeemed by an attacker who intercepts the
+redirect — is preserved by mandatory PKCE `S256` plus exact redirect matching.
+Deployments that want the stricter rule set `allowed_client_redirect_uris` to
+an explicit HTTPS/loopback allowlist.
 
 `GET /authorize` requires `response_type=code`, `code_challenge_method=S256`, `code_challenge`, a resource from the configured allow-list, and a registered redirect URI. With one configured resource, `resource` may be omitted and defaults to it. It renders a consent page. In production, accepting consent redirects to the selected connector's upstream authorization endpoint and `/identity/callback` completes the upstream code flow. Local development also supports `approve=true` to exercise the flow without a browser.
 
@@ -375,19 +411,26 @@ The built-in `LocalKeyProvider` wraps the development PEM loader and ephemeral g
 
 ## Serving multiple resources
 
-One `auth-server` process is deliberately scoped to exactly one connector and
-one `MCP_AUTH_RESOURCE`: `Config.Resource` is a single value, `/authorize`
-rejects any `resource` parameter that doesn't match it exactly, and
-`MCP_AUTH_CONNECTOR` selects exactly one entry out of `MCP_AUTH_CONNECTORS_FILE`
-even when that file defines several. A connectors file with multiple entries
-is for choosing between them across deployments (a staging connector and a
-production connector, say), not for one running server to serve several
-resources at once.
+One `auth-server` process serves **one connector** and an **allow-list of
+resources**. `MCP_AUTH_RESOURCES` takes a comma-separated list; `/authorize`
+and `/token` reject any `resource` parameter outside it, and each issued token
+is bound to the single resource the client asked for. `MCP_AUTH_RESOURCE` is
+the legacy single-value form, used only when `MCP_AUTH_RESOURCES` is unset.
 
-To front more than one resource server or upstream provider, run one
-`auth-server` process per resource — each with its own `MCP_AUTH_CONNECTOR`,
-`MCP_AUTH_RESOURCE`, and `MCP_AUTH_LISTEN_ADDR` — behind a shared reverse
-proxy that routes by hostname or path. Nothing in the current design prevents
+`MCP_AUTH_CONNECTOR` still selects exactly one entry out of
+`MCP_AUTH_CONNECTORS_FILE` even when that file defines several. A connectors
+file with multiple entries is for choosing between them across deployments (a
+staging connector and a production connector, say), not for one running server
+to authenticate against several providers at once.
+
+So: several resources behind one identity provider is a single process with
+`MCP_AUTH_RESOURCES`. Several *identity providers* still needs one process
+each.
+
+To front more than one upstream provider, run one `auth-server` process per
+provider — each with its own `MCP_AUTH_CONNECTOR`, `MCP_AUTH_RESOURCES`, and
+`MCP_AUTH_LISTEN_ADDR` — behind a shared reverse proxy that routes by hostname
+or path. Nothing in the current design prevents
 this; it's an ordinary multi-instance deployment; only the routing in front
 of it changes. For example, with Caddy routing by hostname:
 
@@ -446,3 +489,8 @@ signing keys don't collide.
 - Keep structured audit logs, with tokens, secrets, codes, keys, and assertions redacted.
 - Add rate limits, CSRF protection at the user-login boundary, secure cookies, and reverse-proxy request limits.
 - Verify resource audience in every resource server and never pass through inbound tokens downstream.
+- Advertise every scope you enforce. A resource server whose protected-resource
+  metadata omits `scopes_supported` gives clients nothing to request, so they
+  request none and every call fails `403 insufficient_scope` — a failure that
+  looks like broken authentication. Derive the document from the verifier
+  rather than hand-writing it.
