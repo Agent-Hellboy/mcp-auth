@@ -73,6 +73,17 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.authorizationMetadata)
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.authorizationMetadata)
+	// RFC 8414 section 3.1: when the issuer carries a path, the metadata lives
+	// at /.well-known/<name>/<issuer-path>, with the well-known segment between
+	// the host and the path. A spec-following client - including this repo's own
+	// Go client - asks for that URL first, so a path-mounted deployment that
+	// serves only the two routes above is undiscoverable without an ingress
+	// rewrite in front of it. Both forms are served: the root form keeps
+	// existing deployments and OIDC-style clients working.
+	if issuerPath := s.Config.IssuerPath(); issuerPath != "" {
+		mux.HandleFunc("GET /.well-known/oauth-authorization-server/"+issuerPath, s.authorizationMetadata)
+		mux.HandleFunc("GET /.well-known/openid-configuration/"+issuerPath, s.authorizationMetadata)
+	}
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource", s.protectedResourceMetadata)
 	mux.HandleFunc("GET /.well-known/jwks.json", s.jwks)
 	mux.HandleFunc("GET /healthz", s.health)

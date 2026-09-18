@@ -526,3 +526,66 @@ func TestAuditRedactsSecrets(t *testing.T) {
 		t.Fatal("audit output contained a secret")
 	}
 }
+
+// A path-mounted issuer must be discoverable the way RFC 8414 section 3.1
+// specifies, which is also what this repo's own Go client asks for first
+// (auth-client/go/mcpauth/discovery.go). Serving only the root form makes a
+// deployment behind a path prefix undiscoverable without an ingress rewrite.
+func TestPathMountedIssuerServesRFC8414Metadata(t *testing.T) {
+	config := Config{
+		Issuer:               "http://localhost:18080/mcp-auth",
+		Resource:             "http://localhost:18080/example/mcp",
+		AccessTokenTTL:       time.Minute,
+		RefreshTokenTTL:      time.Hour,
+		AuthorizationCodeTTL: time.Minute,
+		AllowedScopes:        []string{"tools:read"},
+		LocalDevelopment:     true,
+		LocalSubject:         "test-user",
+	}
+	instance, err := NewServer(config, NewMemoryStore(), LocalIdentityProvider{Subject: "test-user"}, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := instance.Handler()
+
+	for _, path := range []string{
+		"/.well-known/oauth-authorization-server/mcp-auth",
+		"/.well-known/openid-configuration/mcp-auth",
+		// The root form keeps existing deployments and OIDC-style clients working.
+		"/.well-known/oauth-authorization-server",
+		"/.well-known/openid-configuration",
+	} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s: got %d, want 200", path, recorder.Code)
+		}
+		if body := recorder.Body.String(); !strings.Contains(body, `"issuer":"http://localhost:18080/mcp-auth"`) {
+			t.Fatalf("%s: metadata did not advertise the configured issuer: %s", path, body)
+		}
+	}
+}
+
+func TestRootMountedIssuerRegistersNoPathRoute(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	// testServer's issuer is http://localhost:8080, so there is no path segment
+	// to append and nothing extra should be routed.
+	testServer(t).Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server/anything", nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("got %d, want 404 for an unmounted issuer path", recorder.Code)
+	}
+}
+
+func TestIssuerPath(t *testing.T) {
+	for issuer, want := range map[string]string{
+		"http://localhost:18080/mcp-auth":  "mcp-auth",
+		"http://localhost:18080/mcp-auth/": "mcp-auth",
+		"https://auth.example.com":         "",
+		"https://auth.example.com/":        "",
+		"https://auth.example.com/a/b":     "a/b",
+	} {
+		if got := (Config{Issuer: issuer}).IssuerPath(); got != want {
+			t.Fatalf("IssuerPath(%q) = %q, want %q", issuer, got, want)
+		}
+	}
+}

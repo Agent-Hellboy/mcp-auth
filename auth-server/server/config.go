@@ -136,6 +136,19 @@ func isLoopbackHost(host string) bool {
 // the value actually checked against can never independently drift, which
 // is exactly how they drifted before (server.go's metadata handler
 // concatenated Issuer raw while its client-assertion check trimmed it).
+// IssuerPath is the issuer's path component without surrounding slashes, or ""
+// when the issuer is mounted at the host root. RFC 8414 section 3.1 derives the
+// metadata URL from it: an issuer of https://host/tenant serves its metadata at
+// https://host/.well-known/oauth-authorization-server/tenant, not at
+// https://host/tenant/.well-known/oauth-authorization-server.
+func (c Config) IssuerPath() string {
+	parsed, err := url.Parse(c.Issuer)
+	if err != nil {
+		return ""
+	}
+	return strings.Trim(parsed.Path, "/")
+}
+
 func (c Config) issuerBase() string {
 	return strings.TrimRight(c.Issuer, "/")
 }
