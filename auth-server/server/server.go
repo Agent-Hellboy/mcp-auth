@@ -447,6 +447,29 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request, client Client)
 	writeJSON(w, http.StatusOK, map[string]any{"access_token": response.AccessToken, "token_type": response.TokenType, "expires_in": response.ExpiresIn, "scope": response.Scope})
 }
 
+// registeredGrantTypes reports the grants a registered client may actually use.
+// Anything the client asked for beyond what this server implements is dropped:
+// echoing it back would promise a grant that every token request then rejects.
+func registeredGrantTypes(requested []string) []string {
+	supported := map[string]bool{
+		"authorization_code": true,
+		"refresh_token":      true,
+		"urn:ietf:params:oauth:grant-type:token-exchange": true,
+	}
+	granted := make([]string, 0, len(requested))
+	for _, grant := range requested {
+		if supported[grant] && !contains(granted, grant) {
+			granted = append(granted, grant)
+		}
+	}
+	if len(granted) == 0 {
+		// RFC 7591 section 2: authorization_code is the default, and this
+		// server always issues a refresh token alongside it.
+		return []string{"authorization_code", "refresh_token"}
+	}
+	return granted
+}
+
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	if !s.Config.RegistrationEnabled {
 		oauthError(w, http.StatusNotFound, "registration_disabled")
@@ -456,6 +479,9 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		ClientName        string   `json:"client_name"`
 		RedirectURIs      []string `json:"redirect_uris"`
 		TokenEndpointAuth string   `json:"token_endpoint_auth_method"`
+		GrantTypes        []string `json:"grant_types"`
+		ResponseTypes     []string `json:"response_types"`
+		Scope             string   `json:"scope"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil || len(input.RedirectURIs) == 0 {
 		oauthError(w, http.StatusBadRequest, "invalid_client_metadata")
@@ -473,7 +499,29 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	}
 	clientID := "mcp_" + randomID()
 	client := Client{ID: clientID, Name: input.ClientName, RedirectURIs: input.RedirectURIs, TokenEndpointAuth: input.TokenEndpointAuth}
-	response := map[string]any{"client_id": clientID, "client_name": input.ClientName, "redirect_uris": input.RedirectURIs, "token_endpoint_auth_method": input.TokenEndpointAuth}
+
+	// RFC 7591 section 3.2.1: the response is the full registered client
+	// metadata, not just the identifier. A client that reads grant_types back
+	// to decide whether it may refresh - rather than assuming - sees an empty
+	// set and has to re-run the whole authorization dance every time.
+	// Registration does not narrow what this server supports, so the echo
+	// states the effective values rather than parroting the request.
+	grantTypes := registeredGrantTypes(input.GrantTypes)
+	responseTypes := []string{"code"}
+	response := map[string]any{
+		"client_id":                  clientID,
+		"client_id_issued_at":        s.now().Unix(),
+		"client_name":                input.ClientName,
+		"redirect_uris":              input.RedirectURIs,
+		"token_endpoint_auth_method": input.TokenEndpointAuth,
+		"grant_types":                grantTypes,
+		"response_types":             responseTypes,
+	}
+	if scope := strings.TrimSpace(input.Scope); scope != "" {
+		response["scope"] = scope
+	} else if len(s.Config.AllowedScopes) > 0 {
+		response["scope"] = strings.Join(s.Config.AllowedScopes, " ")
+	}
 	if input.TokenEndpointAuth != "none" && input.TokenEndpointAuth != "" {
 		secret := randomID()
 		client.SecretHash = HashSecret(secret)

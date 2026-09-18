@@ -650,3 +650,50 @@ func TestConsentEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// RFC 7591 section 3.2.1: the registration response carries the registered
+// client metadata, not just the identifier. A client that reads grant_types
+// back to decide whether it may refresh sees an empty set otherwise and
+// re-runs the whole authorization dance on every call.
+func TestRegisterEchoesRegisteredMetadata(t *testing.T) {
+	instance := testServer(t)
+	body := `{"client_name":"probe","redirect_uris":["http://127.0.0.1:9999/callback"],` +
+		`"grant_types":["authorization_code","refresh_token"],"response_types":["code"],` +
+		`"token_endpoint_auth_method":"none"}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	instance.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("register: got %d, want 201: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"client_id", "client_id_issued_at", "grant_types", "response_types", "scope"} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("registration response is missing %q: %v", key, got)
+		}
+	}
+	grants, _ := got["grant_types"].([]any)
+	if len(grants) != 2 || grants[0] != "authorization_code" || grants[1] != "refresh_token" {
+		t.Fatalf("grant_types = %v, want the two requested grants", got["grant_types"])
+	}
+	if types, _ := got["response_types"].([]any); len(types) != 1 || types[0] != "code" {
+		t.Fatalf("response_types = %v, want [code]", got["response_types"])
+	}
+}
+
+// A grant this server cannot honour must not be echoed back: promising it would
+// have every token request for that grant fail after registration "succeeded".
+func TestRegisterDropsUnsupportedGrants(t *testing.T) {
+	if got := registeredGrantTypes([]string{"authorization_code", "implicit", "password"}); len(got) != 1 || got[0] != "authorization_code" {
+		t.Fatalf("registeredGrantTypes dropped the wrong grants: %v", got)
+	}
+	// RFC 7591 section 2 default, plus the refresh token this server always issues.
+	if got := registeredGrantTypes(nil); len(got) != 2 || got[0] != "authorization_code" || got[1] != "refresh_token" {
+		t.Fatalf("default grant types = %v", got)
+	}
+}
