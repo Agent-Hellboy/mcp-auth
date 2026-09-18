@@ -697,3 +697,47 @@ func TestRegisterDropsUnsupportedGrants(t *testing.T) {
 		t.Fatalf("default grant types = %v", got)
 	}
 }
+
+// OpenID Connect Discovery 1.0 section 3 marks these REQUIRED, and this server
+// serves the same document at /.well-known/openid-configuration. A client that
+// validates against the OIDC schema - Cursor does - rejects the entire document
+// when they are missing and never reaches an endpoint:
+//
+//	path: ["subject_types_supported"]  expected array, received undefined
+func TestAuthorizationMetadataSatisfiesOIDCRequiredFields(t *testing.T) {
+	for _, path := range []string{
+		"/.well-known/oauth-authorization-server",
+		"/.well-known/openid-configuration",
+	} {
+		recorder := httptest.NewRecorder()
+		testServer(t).Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s: got %d", path, recorder.Code)
+		}
+		var metadata map[string]any
+		if err := json.Unmarshal(recorder.Body.Bytes(), &metadata); err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range []string{
+			"issuer",
+			"authorization_endpoint",
+			"token_endpoint",
+			"jwks_uri",
+			"response_types_supported",
+			"subject_types_supported",
+			"id_token_signing_alg_values_supported",
+		} {
+			value, ok := metadata[field]
+			if !ok {
+				t.Fatalf("%s: metadata is missing the required field %q", path, field)
+			}
+			if field == "subject_types_supported" || field == "id_token_signing_alg_values_supported" ||
+				field == "response_types_supported" {
+				list, isList := value.([]any)
+				if !isList || len(list) == 0 {
+					t.Fatalf("%s: %q must be a non-empty array, got %#v", path, field, value)
+				}
+			}
+		}
+	}
+}

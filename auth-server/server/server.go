@@ -143,6 +143,17 @@ func (s *Server) authorizationMetadata(w http.ResponseWriter, _ *http.Request) {
 		"token_endpoint_auth_methods_supported":          []string{"none", "client_secret_basic", "client_secret_post", "private_key_jwt"},
 		"scopes_supported":                               s.Config.AllowedScopes,
 		"authorization_response_iss_parameter_supported": s.Config.AuthorizationResponseIssuer,
+		// OpenID Connect Discovery 1.0 section 3 makes these REQUIRED, and the
+		// same document is served at /.well-known/openid-configuration. A client
+		// that validates against the OIDC schema - Cursor does - rejects the
+		// whole document when they are absent and refuses to connect, long
+		// before it ever reaches an endpoint.
+		//
+		// Both are honest here rather than decorative: this server issues one
+		// non-pairwise subject per upstream identity, and signs with the single
+		// RSA key it publishes at jwks_uri.
+		"subject_types_supported":               []string{"public"},
+		"id_token_signing_alg_values_supported": []string{"RS256"},
 	})
 }
 
