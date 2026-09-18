@@ -1,11 +1,13 @@
 # Local development
 
-Requirements: Go 1.26+ and Python 3.12+.
+Requirements: Go 1.26+, Python 3.12+, and Node.js 20+.
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -e '.[dev]'
+python -m pip install -e '.[dev,fastmcp]'
+npm ci --prefix auth-client/typescript
+npm ci --prefix examples/typescript-mcp
 go test ./auth-server/... ./auth-client/go/...
 pytest
 ```
@@ -28,6 +30,8 @@ ruff check .
 ruff format --check .
 mypy auth-client/python/src
 pytest -q
+npm test --prefix auth-client/typescript
+npm run typecheck --prefix examples/typescript-mcp
 go test ./auth-server/... ./auth-client/go/...
 go vet ./auth-server/... ./auth-client/go/...
 uv run pip-audit --skip-editable
@@ -36,10 +40,11 @@ docker compose -f deploy/docker-compose.e2e.yml up --build --abort-on-container-
 docker compose -f deploy/docker-compose.e2e.yml down --volumes --remove-orphans
 ```
 
-CI also runs Compose MCP OAuth compatibility with Keycloak and the in-tree
-demo resource server, Go vulnerability analysis, Python dependency auditing, a
-Trivy HIGH/CRITICAL scan of the authorization-server image, and the
-public-repository secret/artifact audit.
+CI runs the local authorization flow against real Python, Go, and TypeScript
+resource servers. It also runs Compose MCP OAuth compatibility with Keycloak
+and the in-tree Python demo resource server, Go vulnerability analysis, Python
+and npm dependency auditing, a Trivy HIGH/CRITICAL scan of the authorization
+server image, CodeQL, and the public-repository secret/artifact audit.
 
 A published GitHub Release runs `.github/workflows/docker-release.yml`, which
 builds a multi-arch `auth-server` image and pushes

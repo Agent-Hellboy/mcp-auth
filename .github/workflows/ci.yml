@@ -67,6 +67,31 @@ jobs:
       - run: uv build
       - run: uv build --project auth-client/python
 
+  typescript:
+    name: TypeScript SDK and example
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            auth-client/typescript/package-lock.json
+            examples/typescript-mcp/package-lock.json
+      - run: npm ci
+        working-directory: auth-client/typescript
+      - run: npm test
+        working-directory: auth-client/typescript
+      - run: npm audit --audit-level=high
+        working-directory: auth-client/typescript
+      - run: npm ci
+        working-directory: examples/typescript-mcp
+      - run: npm run typecheck
+        working-directory: examples/typescript-mcp
+      - run: npm audit --audit-level=high
+        working-directory: examples/typescript-mcp
+
   e2e:
     name: MCP authorization E2E
     runs-on: ubuntu-latest
@@ -79,16 +104,33 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            auth-client/typescript/package-lock.json
+            examples/typescript-mcp/package-lock.json
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - run: uv sync --locked --extra dev --python 3.12
+      - run: uv sync --locked --extra dev --extra fastmcp --python 3.12
+      - run: npm ci
+        working-directory: auth-client/typescript
+      - run: npm run build
+        working-directory: auth-client/typescript
+      - run: npm ci
+        working-directory: examples/typescript-mcp
       - name: Build authorization server
         working-directory: auth-server
         run: go build -trimpath -o "${{ runner.temp }}/mcp-auth-server" ./cmd/auth-server
-      - name: Exercise MCP OAuth discovery, PKCE, and resource flow
+      - name: Build Go MCP resource server
+        working-directory: examples/go-mcp
+        run: GOWORK=off go build -trimpath -o "${{ runner.temp }}/go-mcp-server" .
+      - name: Exercise Python, Go, and TypeScript SDK authorization flows
         env:
           MCP_AUTH_SERVER_BINARY: ${{ runner.temp }}/mcp-auth-server
+          MCP_AUTH_GO_SERVER_BINARY: ${{ runner.temp }}/go-mcp-server
         run: uv run pytest tests/e2e -m e2e -q
 
   compose-e2e:

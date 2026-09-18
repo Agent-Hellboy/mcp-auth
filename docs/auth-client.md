@@ -1,6 +1,6 @@
 # Auth client SDKs
 
-Both SDKs are installable without the authorization server. They work with the bundled server or a third-party OAuth authorization server that publishes compatible metadata.
+All three SDKs are installable without the authorization server. They work with the bundled server or a third-party OAuth authorization server that publishes compatible metadata.
 
 The SDK is the authorization boundary inside a resource server. MCP tool handlers
 receive a verified subject and scopes; they do not parse bearer tokens, fetch JWKS,
@@ -66,7 +66,30 @@ disable it only for a controlled local test transport.
 
 ## Go
 
-Import `github.com/Agent-Hellboy/mcp-auth/auth-client/go/mcpauth`, configure `JWTVerifier`, and use `DiscoverProtectedResource`, `DiscoverAuthorizationServer`, `ParseWWWAuthenticate`, and `TokenExchangeClient`. The Go SDK uses the standard library and supports bounded token caching. Install the client module at the `auth-client/go/v0.2.0` release tag.
+Import `github.com/Agent-Hellboy/mcp-auth/auth-client/go/mcpauth`, configure `JWTVerifier`, and use `DiscoverProtectedResource`, `DiscoverAuthorizationServer`, `ParseWWWAuthenticate`, and `TokenExchangeClient`. The Go SDK uses the standard library and supports bounded token caching. Install the client module at the `auth-client/go/v0.3.0` release tag.
+
+## TypeScript
+
+The TypeScript SDK supports Node.js 20 or newer and has no runtime dependencies.
+Until it is published to npm, install it from `auth-client/typescript` in a
+checkout or reference that directory as a workspace dependency.
+
+```ts
+import { JWTVerifier, authenticateRequest } from "@mcp-auth/client";
+
+const verifier = new JWTVerifier({
+  jwksUri: "https://auth.example.com/.well-known/jwks.json",
+  issuer: "https://auth.example.com",
+  audience: "https://mcp.example.com/mcp",
+  requiredScopes: ["tools:read"],
+});
+
+const claims = await authenticateRequest(request, verifier);
+```
+
+The package also exports protected-resource metadata and bearer-challenge
+helpers, authorization-server and protected-resource discovery, and an RFC 8693
+`TokenExchangeClient` with optional `PrivateKeyJWTClientAuth`.
 
 ## Publishing protected resource metadata
 
@@ -82,7 +105,7 @@ reads as broken authentication. Cursor surfaces it as
 `Server returned 403 after trying upscoping` — it tried to escalate and had
 nothing to escalate to.
 
-Both SDKs therefore derive the document from the verifier that guards the
+All three SDKs therefore derive the document from the verifier that guards the
 resource, so the advertised scopes cannot drift from the enforced ones.
 
 **Go**
@@ -110,6 +133,12 @@ verifier = JWTVerifier(
 document = protected_resource_metadata(verifier, resource, issuer)
 ```
 
+**TypeScript**
+
+```ts
+const document = protectedResourceMetadata(verifier, resource, issuer);
+```
+
 Mount it on both the bare well-known path and the path-suffixed form: clients
 build the URL from the resource identifier, so a resource at `/ping/mcp` is
 looked up at `/.well-known/oauth-protected-resource/ping/mcp`.
@@ -119,7 +148,8 @@ document; pass the same scopes the verifier enforces.
 
 ### Challenges
 
-`RequireToken` (Go) emits both challenges for you. Serving the HTTP layer
+`RequireToken` (Go) emits both challenges for you. Python and TypeScript expose
+the challenge helpers directly. Serving the HTTP layer
 yourself means emitting them yourself:
 
 | Situation | Status | Helper |
@@ -136,6 +166,11 @@ A runnable example of the plain (non-FastMCP) Python path, including both
 challenges and the metadata document, lives in the MCP Runtime repository at
 `examples/mcp-auth-sdk-ping-py`; its Go counterpart is
 `examples/mcp-auth-sdk-ping`.
+
+This repository includes `examples/go-mcp` and `examples/typescript-mcp`,
+dependency-light HTTP servers implementing protected MCP JSON-RPC methods with
+their respective SDKs. CI runs both alongside the FastMCP Python example against
+the real authorization server.
 
 ## Discovery and third-party providers
 

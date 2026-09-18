@@ -1,14 +1,28 @@
 # mcp-auth
 
+[![CI](https://github.com/Agent-Hellboy/mcp-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/Agent-Hellboy/mcp-auth/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/Agent-Hellboy/mcp-auth/actions/workflows/codeql.yml/badge.svg)](https://github.com/Agent-Hellboy/mcp-auth/actions/workflows/codeql.yml)
+[![Security policy](https://img.shields.io/badge/security-policy-4C1?logo=securityscorecard)](SECURITY.md)
+[![Container scan](https://img.shields.io/badge/container%20scan-Trivy-1904DA?logo=aqua)](.github/workflows/ci.yml)
+[![Dependency audit](https://img.shields.io/badge/dependencies-audited-2EA44F)](.github/workflows/ci.yml)
+[![Official SDKs: Python, Go, TypeScript](https://img.shields.io/badge/official%20SDKs-Python%20%7C%20Go%20%7C%20TypeScript-5865F2)](docs/auth-client.md)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](auth-server/go.mod)
+[![Python](https://img.shields.io/badge/Python-3.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](auth-client/typescript/package.json)
+[![MCP authorization](https://img.shields.io/badge/MCP-authorization-7C3AED)](docs/architecture.md)
+[![GitHub release](https://img.shields.io/github/v/release/Agent-Hellboy/mcp-auth?display_name=tag)](https://github.com/Agent-Hellboy/mcp-auth/releases)
+[![Docker pulls](https://img.shields.io/docker/pulls/princekrroshan01/mcp-auth-server)](https://hub.docker.com/r/princekrroshan01/mcp-auth-server)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A provider-neutral OAuth platform for HTTP-based Model Context Protocol (MCP)
-resource servers: a standalone authorization server, plus Python and Go SDKs for
-the resource-server side.
+resource servers: a standalone authorization server, plus Python, Go, and
+TypeScript SDKs for the resource-server side.
 
 It separates three concerns that are often coupled:
 
 - **MCP clients** complete standard Authorization Code + PKCE.
-- **MCP resource servers** validate narrowly scoped access tokens with a reusable
-  Python or Go SDK.
+- **MCP resource servers** validate narrowly scoped access tokens with reusable
+  Python, Go, or TypeScript SDKs.
 - **Identity providers and downstream APIs** stay behind runtime-configured
   connectors.
 
@@ -23,7 +37,7 @@ issuer, and ID tokens may use RS256, PS256, or ES256. See
 ```mermaid
 flowchart LR
     client["MCP client<br/>Cursor, Claude, or another client"]
-    resource["MCP resource server<br/>Python or Go SDK"]
+    resource["MCP resource server<br/>Python, Go, or TypeScript SDK"]
     auth["mcp-auth<br/>authorization server"]
     idp["Upstream identity provider<br/>OIDC or OAuth 2.0"]
     api["Downstream API"]
@@ -50,7 +64,7 @@ docker run --rm -p 8080:8080 \
   -e MCP_AUTH_RESOURCES=http://localhost:8081/mcp \
   -e MCP_AUTH_LOCAL_DEVELOPMENT=true \
   -e MCP_AUTH_REQUIRE_HTTPS=false \
-  princekrroshan01/mcp-auth-server:0.2.0
+  princekrroshan01/mcp-auth-server:0.3.0
 ```
 
 Local-development only — no TLS, no identity provider. See
@@ -65,6 +79,8 @@ Local-development only — no TLS, no identity provider. See
 | Understand the protocol flow | [Architecture](docs/architecture.md) |
 | Know what is guaranteed, and what I own | [Security model](docs/security-model.md) |
 | Run an end-to-end example | [Demo MCP + Keycloak](docs/demo-example.md) |
+| Build a Node.js MCP server | [TypeScript example](examples/typescript-mcp) |
+| Build a Go MCP server | [Go example](examples/go-mcp) |
 | Contribute, run tests, or cut a release | [Local development](docs/development.md) |
 
 ## Repository layout
@@ -75,7 +91,10 @@ Local-development only — no TLS, no identity provider. See
   (`github.com/Agent-Hellboy/mcp-auth/auth-client/go/mcpauth`, tagged
   `auth-client/go/vX.Y.Z`)
 - `auth-client/python/` — Python resource-server SDK, including a FastMCP adapter
+- `auth-client/typescript/` — TypeScript resource-server SDK for Node.js
 - `examples/demo-mcp/` — dummy FastMCP resource server used by the Compose E2E
+- `examples/typescript-mcp/` — protected TypeScript MCP JSON-RPC server
+- `examples/go-mcp/` — protected Go MCP JSON-RPC server
 
 The Python SDK installs from Git while its API settles:
 

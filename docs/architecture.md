@@ -9,7 +9,10 @@ identity provider authenticated the user.
 
 `auth-server` is an independently deployable Go OAuth authorization server. It owns authorization codes, consent, access-token signing, refresh-token rotation, client registration, and authorization-server metadata.
 
-`auth-client/python` and `auth-client/go` are resource-server SDKs. They validate access tokens issued by any compatible authorization server and provide discovery, challenge, and token-exchange helpers. They do not require the bundled authorization server.
+`auth-client/python`, `auth-client/go`, and `auth-client/typescript` are
+resource-server SDKs. They validate access tokens issued by any compatible
+authorization server and provide discovery, challenge, and token-exchange
+helpers. They do not require the bundled authorization server.
 
 Provider integrations implement `IdentityProvider` or `TokenExchanger` interfaces. Provider-specific claims, SDKs, and policy remain outside the core server and SDKs.
 

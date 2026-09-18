@@ -82,6 +82,7 @@ def build_remote_auth(
         jwks_uri=jwks_uri,
         issuer=issuer,
         audience=resource_url.rstrip("/") + "/" + mcp_path.strip("/"),
+        required_scopes=set(scopes_supported or ()),
         ssrf_safe=ssrf_safe,
     )
     return RemoteAuthProvider(
