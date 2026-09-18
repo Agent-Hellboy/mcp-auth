@@ -8,8 +8,11 @@ client tries the spec form first and falls back.
 
 import httpx
 import pytest
-
-from mcp_auth_client.discovery import _discovery_candidates, _well_known, discover_authorization_server
+from mcp_auth_client.discovery import (
+    _discovery_candidates,
+    _well_known,
+    discover_authorization_server,
+)
 
 
 def test_well_known_inserts_segment_before_the_issuer_path():
