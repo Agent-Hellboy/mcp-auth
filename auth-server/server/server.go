@@ -188,7 +188,12 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = consentPage.Execute(w, map[string]any{"ID": consentID, "ClientID": request.ClientID, "Scopes": strings.Join(request.Scope, " ")})
+	_ = consentPage.Execute(w, map[string]any{
+		"ID":       consentID,
+		"ClientID": request.ClientID,
+		"Scopes":   strings.Join(request.Scope, " "),
+		"Action":   s.Config.ConsentEndpoint(),
+	})
 }
 
 func (s *Server) consent(w http.ResponseWriter, r *http.Request) {
@@ -650,4 +655,4 @@ func contains(values []string, want string) bool {
 	return false
 }
 
-var consentPage = template.Must(template.New("consent").Parse(`<!doctype html><html><body><h1>Authorize MCP client</h1><p>{{.ClientID}} requests: {{.Scopes}}</p><form method="post" action="/authorize/consent"><input type="hidden" name="consent_id" value="{{.ID}}"><button name="decision" value="approve" type="submit">Allow</button><button name="decision" value="deny" type="submit">Deny</button></form></body></html>`))
+var consentPage = template.Must(template.New("consent").Parse(`<!doctype html><html><body><h1>Authorize MCP client</h1><p>{{.ClientID}} requests: {{.Scopes}}</p><form method="post" action="{{.Action}}"><input type="hidden" name="consent_id" value="{{.ID}}"><button name="decision" value="approve" type="submit">Allow</button><button name="decision" value="deny" type="submit">Deny</button></form></body></html>`))

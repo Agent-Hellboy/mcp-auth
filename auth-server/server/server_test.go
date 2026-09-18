@@ -589,3 +589,64 @@ func TestIssuerPath(t *testing.T) {
 		}
 	}
 }
+
+// The consent form must post to an issuer-derived URL. A root-relative action
+// resolves against the browser's origin, so on a path-mounted deployment the
+// browser drops the issuer prefix and posts to a 404 - the consent step failed
+// even though /authorize itself had rendered fine.
+func TestConsentFormPostsToTheIssuerMountedPath(t *testing.T) {
+	config := Config{
+		Issuer:               "http://localhost:18080/mcp-auth",
+		Resources:            []string{"http://localhost:18080/ping/mcp"},
+		AccessTokenTTL:       time.Minute,
+		RefreshTokenTTL:      time.Hour,
+		AuthorizationCodeTTL: time.Minute,
+		AllowedScopes:        []string{"tools:read"},
+		RegistrationEnabled:  true,
+		LocalDevelopment:     true,
+		LocalSubject:         "test-user",
+	}
+	instance, err := NewServer(config, NewMemoryStore(), LocalIdentityProvider{Subject: "test-user"}, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.Store.SaveClient(Client{ID: "client", RedirectURIs: []string{"http://127.0.0.1:9999/callback"}, TokenEndpointAuth: "none"}); err != nil {
+		t.Fatal(err)
+	}
+
+	query := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {"client"},
+		"redirect_uri":          {"http://127.0.0.1:9999/callback"},
+		"code_challenge":        {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"tools:read"},
+		"resource":              {"http://localhost:18080/ping/mcp"},
+	}
+	recorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/authorize?"+query.Encode(), nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("authorize: got %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+
+	body := recorder.Body.String()
+	want := `action="http://localhost:18080/mcp-auth/authorize/consent"`
+	if !strings.Contains(body, want) {
+		t.Fatalf("consent form does not post to the mounted path.\nwant: %s\ngot:  %s", want, body)
+	}
+	if strings.Contains(body, `action="/authorize/consent"`) {
+		t.Fatalf("consent form still uses a root-relative action: %s", body)
+	}
+}
+
+func TestConsentEndpoint(t *testing.T) {
+	for issuer, want := range map[string]string{
+		"http://localhost:18080/mcp-auth": "http://localhost:18080/mcp-auth/authorize/consent",
+		"https://auth.example.com":        "https://auth.example.com/authorize/consent",
+		"https://auth.example.com/":       "https://auth.example.com/authorize/consent",
+	} {
+		if got := (Config{Issuer: issuer}).ConsentEndpoint(); got != want {
+			t.Fatalf("ConsentEndpoint(%q) = %q, want %q", issuer, got, want)
+		}
+	}
+}

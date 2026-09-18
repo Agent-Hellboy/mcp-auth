@@ -160,6 +160,12 @@ func (c Config) RevocationEndpoint() string    { return c.issuerBase() + "/revok
 func (c Config) JWKSURI() string               { return c.issuerBase() + "/.well-known/jwks.json" }
 func (c Config) IdentityCallbackURL() string   { return c.issuerBase() + "/identity/callback" }
 
+// ConsentEndpoint is where the consent form posts. It has to come from the
+// issuer like the rest: a root-relative form action resolves against the
+// browser's origin, which drops the issuer's path prefix on a path-mounted
+// deployment and posts to a 404.
+func (c Config) ConsentEndpoint() string { return c.issuerBase() + "/authorize/consent" }
+
 func ConfigFromEnv() Config {
 	return Config{
 		Issuer:                      env("MCP_AUTH_ISSUER", "http://localhost:8080"),
