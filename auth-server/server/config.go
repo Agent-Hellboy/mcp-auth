@@ -29,12 +29,18 @@ type Config struct {
 	AuthorizationResponseIssuer bool
 	LocalTokenExchange          bool
 	RequireHTTPS                bool
-	AllowInsecureConnectors     bool
-	ConnectorsFile              string
-	ConnectorName               string
-	StoreBackend                string
-	DatabaseURL                 string
-	ResourceClientsFile         string
+	// TrustProxyTLS lets the deployment declare that a trusted reverse
+	// proxy terminates TLS in front of this process and overwrites the
+	// forwarded headers. Only then is X-Forwarded-Proto evidence of
+	// anything: it is client-supplied, so trusting it unconditionally
+	// turns RequireHTTPS into a header any caller can set.
+	TrustProxyTLS           bool
+	AllowInsecureConnectors bool
+	ConnectorsFile          string
+	ConnectorName           string
+	StoreBackend            string
+	DatabaseURL             string
+	ResourceClientsFile     string
 	// AllowedClientRedirectURIs restricts dynamic client registration
 	// (POST /register) to these exact redirect_uris when non-empty, in
 	// addition to validRedirect's scheme/host checks. It is populated from
@@ -136,6 +142,19 @@ func isLoopbackHost(host string) bool {
 // the value actually checked against can never independently drift, which
 // is exactly how they drifted before (server.go's metadata handler
 // concatenated Issuer raw while its client-assertion check trimmed it).
+// IssuerPath is the issuer's path component without surrounding slashes, or ""
+// when the issuer is mounted at the host root. RFC 8414 section 3.1 derives the
+// metadata URL from it: an issuer of https://host/tenant serves its metadata at
+// https://host/.well-known/oauth-authorization-server/tenant, not at
+// https://host/tenant/.well-known/oauth-authorization-server.
+func (c Config) IssuerPath() string {
+	parsed, err := url.Parse(c.Issuer)
+	if err != nil {
+		return ""
+	}
+	return strings.Trim(parsed.Path, "/")
+}
+
 func (c Config) issuerBase() string {
 	return strings.TrimRight(c.Issuer, "/")
 }
@@ -146,6 +165,12 @@ func (c Config) RegistrationEndpoint() string  { return c.issuerBase() + "/regis
 func (c Config) RevocationEndpoint() string    { return c.issuerBase() + "/revoke" }
 func (c Config) JWKSURI() string               { return c.issuerBase() + "/.well-known/jwks.json" }
 func (c Config) IdentityCallbackURL() string   { return c.issuerBase() + "/identity/callback" }
+
+// ConsentEndpoint is where the consent form posts. It has to come from the
+// issuer like the rest: a root-relative form action resolves against the
+// browser's origin, which drops the issuer's path prefix on a path-mounted
+// deployment and posts to a 404.
+func (c Config) ConsentEndpoint() string { return c.issuerBase() + "/authorize/consent" }
 
 func ConfigFromEnv() Config {
 	return Config{
@@ -166,6 +191,7 @@ func ConfigFromEnv() Config {
 		AuthorizationResponseIssuer: boolEnv("MCP_AUTH_AUTHORIZATION_RESPONSE_ISS", true),
 		LocalTokenExchange:          boolEnv("MCP_AUTH_LOCAL_TOKEN_EXCHANGE", false),
 		RequireHTTPS:                boolEnv("MCP_AUTH_REQUIRE_HTTPS", true),
+		TrustProxyTLS:               boolEnv("MCP_AUTH_TRUST_PROXY_TLS", false),
 		AllowInsecureConnectors:     boolEnv("MCP_AUTH_ALLOW_INSECURE_CONNECTORS", false),
 		ConnectorsFile:              os.Getenv("MCP_AUTH_CONNECTORS_FILE"),
 		ConnectorName:               os.Getenv("MCP_AUTH_CONNECTOR"),

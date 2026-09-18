@@ -11,10 +11,14 @@ import (
 	"time"
 )
 
+// ProtectedResourceMetadata is the RFC 9728 document. The same type is parsed
+// by clients and served by resource servers (see metadata.go), so the two can
+// never disagree about the shape.
 type ProtectedResourceMetadata struct {
-	Resource             string   `json:"resource"`
-	AuthorizationServers []string `json:"authorization_servers"`
-	ScopesSupported      []string `json:"scopes_supported"`
+	Resource               string   `json:"resource"`
+	AuthorizationServers   []string `json:"authorization_servers"`
+	BearerMethodsSupported []string `json:"bearer_methods_supported,omitempty"`
+	ScopesSupported        []string `json:"scopes_supported,omitempty"`
 }
 type AuthorizationServerMetadata struct {
 	Issuer                                     string `json:"issuer"`
@@ -39,14 +43,19 @@ func DiscoverAuthorizationServerContext(ctx context.Context, client *http.Client
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return metadata, fmt.Errorf("invalid issuer URL")
 	}
-	endpoint := wellKnownURL(parsed, "oauth-authorization-server")
-	err = getJSONContext(ctx, client, endpoint, &metadata)
-	if err != nil {
+	// RFC 8414 section 3.1 first (well-known segment between host and issuer
+	// path), then the OIDC-style suffix form. The suffix form is not what the
+	// spec says, but it is what a path-mounted server that predates RFC 8414
+	// awareness actually serves, and dropping it would strand those
+	// deployments.
+	for _, endpoint := range discoveryCandidates(parsed) {
 		metadata = AuthorizationServerMetadata{}
-		err = getJSONContext(ctx, client, wellKnownURL(parsed, "openid-configuration"), &metadata)
+		if err = getJSONContext(ctx, client, endpoint, &metadata); err == nil {
+			break
+		}
 	}
 	if err != nil {
-		return metadata, err
+		return AuthorizationServerMetadata{}, err
 	}
 	if metadata.Issuer != strings.TrimRight(issuer, "/") {
 		return AuthorizationServerMetadata{}, fmt.Errorf("authorization-server metadata issuer mismatch")
@@ -76,6 +85,24 @@ func getJSONContext(ctx context.Context, client *http.Client, endpoint string, t
 		return err
 	}
 	return nil
+}
+
+// discoveryCandidates lists the metadata URLs to try, in order. An issuer with
+// no path yields the same two URLs the spec and OIDC both point at, so the
+// suffix entries collapse into the first two and cost nothing.
+func discoveryCandidates(issuer *url.URL) []string {
+	candidates := []string{
+		wellKnownURL(issuer, "oauth-authorization-server"),
+		wellKnownURL(issuer, "openid-configuration"),
+	}
+	base := strings.TrimRight(issuer.String(), "/")
+	for _, name := range []string{"oauth-authorization-server", "openid-configuration"} {
+		suffix := base + "/.well-known/" + name
+		if suffix != candidates[0] && suffix != candidates[1] {
+			candidates = append(candidates, suffix)
+		}
+	}
+	return candidates
 }
 
 func wellKnownURL(issuer *url.URL, name string) string {

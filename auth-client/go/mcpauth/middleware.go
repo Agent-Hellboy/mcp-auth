@@ -25,12 +25,7 @@ func RequireToken(verifier *JWTVerifier, metadata ResourceMetadata, next http.Ha
 		}
 		claims, err := verifier.VerifyContext(r.Context(), parts[1])
 		if err != nil {
-			scopes := []string{}
-			if verifier != nil {
-				for scope := range verifier.RequiredScopes {
-					scopes = append(scopes, scope)
-				}
-			}
+			scopes := requiredScopes(verifier)
 			// Verification errors contain only a safe failure category; the
 			// bearer value is never logged. This gives resource servers an
 			// actionable diagnostic while preserving the generic wire response.

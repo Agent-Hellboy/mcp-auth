@@ -73,7 +73,22 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.authorizationMetadata)
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.authorizationMetadata)
+	// RFC 8414 section 3.1: when the issuer carries a path, the metadata lives
+	// at /.well-known/<name>/<issuer-path>, with the well-known segment between
+	// the host and the path. A spec-following client - including this repo's own
+	// Go client - asks for that URL first, so a path-mounted deployment that
+	// serves only the two routes above is undiscoverable without an ingress
+	// rewrite in front of it. Both forms are served: the root form keeps
+	// existing deployments and OIDC-style clients working.
+	if issuerPath := s.Config.IssuerPath(); issuerPath != "" {
+		mux.HandleFunc("GET /.well-known/oauth-authorization-server/"+issuerPath, s.authorizationMetadata)
+		mux.HandleFunc("GET /.well-known/openid-configuration/"+issuerPath, s.authorizationMetadata)
+	}
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource", s.protectedResourceMetadata)
+	// RFC 9728 section 3.1 forms the metadata URL by inserting the well-known
+	// segment before the resource's path, so a resource at /ping/mcp is
+	// described at /.well-known/oauth-protected-resource/ping/mcp.
+	mux.HandleFunc("GET /.well-known/oauth-protected-resource/{path...}", s.protectedResourceMetadata)
 	mux.HandleFunc("GET /.well-known/jwks.json", s.jwks)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
@@ -132,13 +147,69 @@ func (s *Server) authorizationMetadata(w http.ResponseWriter, _ *http.Request) {
 		"token_endpoint_auth_methods_supported":          []string{"none", "client_secret_basic", "client_secret_post", "private_key_jwt"},
 		"scopes_supported":                               s.Config.AllowedScopes,
 		"authorization_response_iss_parameter_supported": s.Config.AuthorizationResponseIssuer,
+		// OpenID Connect Discovery 1.0 section 3 makes these REQUIRED, and the
+		// same document is served at /.well-known/openid-configuration. A client
+		// that validates against the OIDC schema - Cursor does - rejects the
+		// whole document when they are absent and refuses to connect, long
+		// before it ever reaches an endpoint.
+		//
+		// Both are honest here rather than decorative: this server issues one
+		// non-pairwise subject per upstream identity, and signs with the single
+		// RSA key it publishes at jwks_uri.
+		"subject_types_supported":               []string{"public"},
+		"id_token_signing_alg_values_supported": []string{"RS256"},
 	})
 }
 
-func (s *Server) protectedResourceMetadata(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Cache-Control", "max-age=3600")
+// protectedResourceMetadata serves RFC 9728 metadata for one resource.
+//
+// The document is per-resource: "resource" is a single audience a client will
+// bind its token to. Answering the bare well-known path with an arbitrary entry
+// from a multi-resource deployment hands the client the wrong audience and its
+// tokens are then rejected by the server it meant to call, so the bare path is
+// only answered when the deployment has exactly one resource. Everything else
+// must address a resource by its path.
+//
+// Canonically this document belongs to the resource server, which knows the
+// scopes it enforces. This endpoint is a convenience for deployments that front
+// the authorization server and the resource on one host.
+func (s *Server) protectedResourceMetadata(w http.ResponseWriter, r *http.Request) {
 	resources := s.Config.configuredResources()
-	writeJSON(w, http.StatusOK, map[string]any{"resource": resources[0], "resources": resources, "authorization_servers": []string{s.Config.Issuer}, "scopes_supported": s.Config.AllowedScopes})
+	resource, ok := matchResource(resources, r.PathValue("path"))
+	if !ok {
+		oauthError(w, http.StatusNotFound, "invalid_request")
+		return
+	}
+	w.Header().Set("Cache-Control", "max-age=3600")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"resource":                 resource,
+		"authorization_servers":    []string{s.Config.Issuer},
+		"bearer_methods_supported": []string{"header"},
+		"scopes_supported":         s.Config.AllowedScopes,
+	})
+}
+
+// matchResource resolves the resource a metadata request addresses. An empty
+// path is the bare well-known URL, which is unambiguous only for a
+// single-resource deployment.
+func matchResource(resources []string, path string) (string, bool) {
+	if path == "" {
+		if len(resources) == 1 {
+			return resources[0], true
+		}
+		return "", false
+	}
+	want := "/" + strings.Trim(path, "/")
+	for _, resource := range resources {
+		parsed, err := url.Parse(resource)
+		if err != nil {
+			continue
+		}
+		if "/"+strings.Trim(parsed.Path, "/") == want {
+			return resource, true
+		}
+	}
+	return "", false
 }
 
 func (s *Server) jwks(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +248,12 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = consentPage.Execute(w, map[string]any{"ID": consentID, "ClientID": request.ClientID, "Scopes": strings.Join(request.Scope, " ")})
+	_ = consentPage.Execute(w, map[string]any{
+		"ID":       consentID,
+		"ClientID": request.ClientID,
+		"Scopes":   strings.Join(request.Scope, " "),
+		"Action":   s.Config.ConsentEndpoint(),
+	})
 }
 
 func (s *Server) consent(w http.ResponseWriter, r *http.Request) {
@@ -431,6 +507,29 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request, client Client)
 	writeJSON(w, http.StatusOK, map[string]any{"access_token": response.AccessToken, "token_type": response.TokenType, "expires_in": response.ExpiresIn, "scope": response.Scope})
 }
 
+// registeredGrantTypes reports the grants a registered client may actually use.
+// Anything the client asked for beyond what this server implements is dropped:
+// echoing it back would promise a grant that every token request then rejects.
+func registeredGrantTypes(requested []string) []string {
+	supported := map[string]bool{
+		"authorization_code": true,
+		"refresh_token":      true,
+		"urn:ietf:params:oauth:grant-type:token-exchange": true,
+	}
+	granted := make([]string, 0, len(requested))
+	for _, grant := range requested {
+		if supported[grant] && !contains(granted, grant) {
+			granted = append(granted, grant)
+		}
+	}
+	if len(granted) == 0 {
+		// RFC 7591 section 2: authorization_code is the default, and this
+		// server always issues a refresh token alongside it.
+		return []string{"authorization_code", "refresh_token"}
+	}
+	return granted
+}
+
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	if !s.Config.RegistrationEnabled {
 		oauthError(w, http.StatusNotFound, "registration_disabled")
@@ -440,6 +539,9 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		ClientName        string   `json:"client_name"`
 		RedirectURIs      []string `json:"redirect_uris"`
 		TokenEndpointAuth string   `json:"token_endpoint_auth_method"`
+		GrantTypes        []string `json:"grant_types"`
+		ResponseTypes     []string `json:"response_types"`
+		Scope             string   `json:"scope"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil || len(input.RedirectURIs) == 0 {
 		oauthError(w, http.StatusBadRequest, "invalid_client_metadata")
@@ -457,7 +559,29 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	}
 	clientID := "mcp_" + randomID()
 	client := Client{ID: clientID, Name: input.ClientName, RedirectURIs: input.RedirectURIs, TokenEndpointAuth: input.TokenEndpointAuth}
-	response := map[string]any{"client_id": clientID, "client_name": input.ClientName, "redirect_uris": input.RedirectURIs, "token_endpoint_auth_method": input.TokenEndpointAuth}
+
+	// RFC 7591 section 3.2.1: the response is the full registered client
+	// metadata, not just the identifier. A client that reads grant_types back
+	// to decide whether it may refresh - rather than assuming - sees an empty
+	// set and has to re-run the whole authorization dance every time.
+	// Registration does not narrow what this server supports, so the echo
+	// states the effective values rather than parroting the request.
+	grantTypes := registeredGrantTypes(input.GrantTypes)
+	responseTypes := []string{"code"}
+	response := map[string]any{
+		"client_id":                  clientID,
+		"client_id_issued_at":        s.now().Unix(),
+		"client_name":                input.ClientName,
+		"redirect_uris":              input.RedirectURIs,
+		"token_endpoint_auth_method": input.TokenEndpointAuth,
+		"grant_types":                grantTypes,
+		"response_types":             responseTypes,
+	}
+	if scope := strings.TrimSpace(input.Scope); scope != "" {
+		response["scope"] = scope
+	} else if len(s.Config.AllowedScopes) > 0 {
+		response["scope"] = strings.Join(s.Config.AllowedScopes, " ")
+	}
 	if input.TokenEndpointAuth != "none" && input.TokenEndpointAuth != "" {
 		secret := randomID()
 		client.SecretHash = HashSecret(secret)
@@ -560,13 +684,30 @@ func (s *Server) cors(next http.Handler) http.Handler {
 	})
 }
 
+// httpsOnly refuses plaintext requests when the deployment requires TLS.
+//
+// X-Forwarded-Proto is set by the caller, so it is only evidence that TLS was
+// terminated upstream when the deployment says a trusted proxy is the only way
+// in — MCP_AUTH_TRUST_PROXY_TLS. Without that, honouring the header would let
+// any caller that can reach this process satisfy RequireHTTPS by setting one
+// header, which is no guard at all.
+//
+// Operators running behind an ingress that terminates TLS must set
+// MCP_AUTH_TRUST_PROXY_TLS=true *and* ensure the proxy overwrites inbound
+// X-Forwarded-* headers and is the only route to this process.
 func (s *Server) httpsOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.Config.RequireHTTPS && r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
-			oauthError(w, http.StatusBadRequest, "https_required")
+		if !s.Config.RequireHTTPS || r.TLS != nil {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		if s.Config.TrustProxyTLS && r.Header.Get("X-Forwarded-Proto") == "https" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		oauthErrorWithDescription(w, http.StatusBadRequest, "https_required",
+			"this request arrived over plaintext HTTP; terminate TLS on this process, or set MCP_AUTH_TRUST_PROXY_TLS=true when a trusted proxy terminates it and is the only route in")
+		return
 	})
 }
 
@@ -577,6 +718,12 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 func oauthError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]string{"error": code})
+}
+
+// oauthErrorWithDescription adds the RFC 6749 error_description. Use it where a
+// bare code leaves the operator guessing at the cause.
+func oauthErrorWithDescription(w http.ResponseWriter, status int, code, description string) {
+	writeJSON(w, status, map[string]string{"error": code, "error_description": description})
 }
 func redirectError(w http.ResponseWriter, r *http.Request, request AuthorizationRequest, code, description, issuer string, includeIssuer bool) {
 	location, _ := url.Parse(request.RedirectURI)
@@ -639,4 +786,4 @@ func contains(values []string, want string) bool {
 	return false
 }
 
-var consentPage = template.Must(template.New("consent").Parse(`<!doctype html><html><body><h1>Authorize MCP client</h1><p>{{.ClientID}} requests: {{.Scopes}}</p><form method="post" action="/authorize/consent"><input type="hidden" name="consent_id" value="{{.ID}}"><button name="decision" value="approve" type="submit">Allow</button><button name="decision" value="deny" type="submit">Deny</button></form></body></html>`))
+var consentPage = template.Must(template.New("consent").Parse(`<!doctype html><html><body><h1>Authorize MCP client</h1><p>{{.ClientID}} requests: {{.Scopes}}</p><form method="post" action="{{.Action}}"><input type="hidden" name="consent_id" value="{{.ID}}"><button name="decision" value="approve" type="submit">Allow</button><button name="decision" value="deny" type="submit">Deny</button></form></body></html>`))

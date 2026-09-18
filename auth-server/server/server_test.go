@@ -526,3 +526,327 @@ func TestAuditRedactsSecrets(t *testing.T) {
 		t.Fatal("audit output contained a secret")
 	}
 }
+
+// A path-mounted issuer must be discoverable the way RFC 8414 section 3.1
+// specifies, which is also what this repo's own Go client asks for first
+// (auth-client/go/mcpauth/discovery.go). Serving only the root form makes a
+// deployment behind a path prefix undiscoverable without an ingress rewrite.
+func TestPathMountedIssuerServesRFC8414Metadata(t *testing.T) {
+	config := Config{
+		Issuer:               "http://localhost:18080/mcp-auth",
+		Resource:             "http://localhost:18080/example/mcp",
+		AccessTokenTTL:       time.Minute,
+		RefreshTokenTTL:      time.Hour,
+		AuthorizationCodeTTL: time.Minute,
+		AllowedScopes:        []string{"tools:read"},
+		LocalDevelopment:     true,
+		LocalSubject:         "test-user",
+	}
+	instance, err := NewServer(config, NewMemoryStore(), LocalIdentityProvider{Subject: "test-user"}, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := instance.Handler()
+
+	for _, path := range []string{
+		"/.well-known/oauth-authorization-server/mcp-auth",
+		"/.well-known/openid-configuration/mcp-auth",
+		// The root form keeps existing deployments and OIDC-style clients working.
+		"/.well-known/oauth-authorization-server",
+		"/.well-known/openid-configuration",
+	} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s: got %d, want 200", path, recorder.Code)
+		}
+		if body := recorder.Body.String(); !strings.Contains(body, `"issuer":"http://localhost:18080/mcp-auth"`) {
+			t.Fatalf("%s: metadata did not advertise the configured issuer: %s", path, body)
+		}
+	}
+}
+
+func TestRootMountedIssuerRegistersNoPathRoute(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	// testServer's issuer is http://localhost:8080, so there is no path segment
+	// to append and nothing extra should be routed.
+	testServer(t).Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server/anything", nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("got %d, want 404 for an unmounted issuer path", recorder.Code)
+	}
+}
+
+func TestIssuerPath(t *testing.T) {
+	for issuer, want := range map[string]string{
+		"http://localhost:18080/mcp-auth":  "mcp-auth",
+		"http://localhost:18080/mcp-auth/": "mcp-auth",
+		"https://auth.example.com":         "",
+		"https://auth.example.com/":        "",
+		"https://auth.example.com/a/b":     "a/b",
+	} {
+		if got := (Config{Issuer: issuer}).IssuerPath(); got != want {
+			t.Fatalf("IssuerPath(%q) = %q, want %q", issuer, got, want)
+		}
+	}
+}
+
+// The consent form must post to an issuer-derived URL. A root-relative action
+// resolves against the browser's origin, so on a path-mounted deployment the
+// browser drops the issuer prefix and posts to a 404 - the consent step failed
+// even though /authorize itself had rendered fine.
+func TestConsentFormPostsToTheIssuerMountedPath(t *testing.T) {
+	config := Config{
+		Issuer:               "http://localhost:18080/mcp-auth",
+		Resources:            []string{"http://localhost:18080/ping/mcp"},
+		AccessTokenTTL:       time.Minute,
+		RefreshTokenTTL:      time.Hour,
+		AuthorizationCodeTTL: time.Minute,
+		AllowedScopes:        []string{"tools:read"},
+		RegistrationEnabled:  true,
+		LocalDevelopment:     true,
+		LocalSubject:         "test-user",
+	}
+	instance, err := NewServer(config, NewMemoryStore(), LocalIdentityProvider{Subject: "test-user"}, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.Store.SaveClient(Client{ID: "client", RedirectURIs: []string{"http://127.0.0.1:9999/callback"}, TokenEndpointAuth: "none"}); err != nil {
+		t.Fatal(err)
+	}
+
+	query := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {"client"},
+		"redirect_uri":          {"http://127.0.0.1:9999/callback"},
+		"code_challenge":        {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"tools:read"},
+		"resource":              {"http://localhost:18080/ping/mcp"},
+	}
+	recorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/authorize?"+query.Encode(), nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("authorize: got %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+
+	body := recorder.Body.String()
+	want := `action="http://localhost:18080/mcp-auth/authorize/consent"`
+	if !strings.Contains(body, want) {
+		t.Fatalf("consent form does not post to the mounted path.\nwant: %s\ngot:  %s", want, body)
+	}
+	if strings.Contains(body, `action="/authorize/consent"`) {
+		t.Fatalf("consent form still uses a root-relative action: %s", body)
+	}
+}
+
+func TestConsentEndpoint(t *testing.T) {
+	for issuer, want := range map[string]string{
+		"http://localhost:18080/mcp-auth": "http://localhost:18080/mcp-auth/authorize/consent",
+		"https://auth.example.com":        "https://auth.example.com/authorize/consent",
+		"https://auth.example.com/":       "https://auth.example.com/authorize/consent",
+	} {
+		if got := (Config{Issuer: issuer}).ConsentEndpoint(); got != want {
+			t.Fatalf("ConsentEndpoint(%q) = %q, want %q", issuer, got, want)
+		}
+	}
+}
+
+// RFC 7591 section 3.2.1: the registration response carries the registered
+// client metadata, not just the identifier. A client that reads grant_types
+// back to decide whether it may refresh sees an empty set otherwise and
+// re-runs the whole authorization dance on every call.
+func TestRegisterEchoesRegisteredMetadata(t *testing.T) {
+	instance := testServer(t)
+	body := `{"client_name":"probe","redirect_uris":["http://127.0.0.1:9999/callback"],` +
+		`"grant_types":["authorization_code","refresh_token"],"response_types":["code"],` +
+		`"token_endpoint_auth_method":"none"}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	instance.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("register: got %d, want 201: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"client_id", "client_id_issued_at", "grant_types", "response_types", "scope"} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("registration response is missing %q: %v", key, got)
+		}
+	}
+	grants, _ := got["grant_types"].([]any)
+	if len(grants) != 2 || grants[0] != "authorization_code" || grants[1] != "refresh_token" {
+		t.Fatalf("grant_types = %v, want the two requested grants", got["grant_types"])
+	}
+	if types, _ := got["response_types"].([]any); len(types) != 1 || types[0] != "code" {
+		t.Fatalf("response_types = %v, want [code]", got["response_types"])
+	}
+}
+
+// A grant this server cannot honour must not be echoed back: promising it would
+// have every token request for that grant fail after registration "succeeded".
+func TestRegisterDropsUnsupportedGrants(t *testing.T) {
+	if got := registeredGrantTypes([]string{"authorization_code", "implicit", "password"}); len(got) != 1 || got[0] != "authorization_code" {
+		t.Fatalf("registeredGrantTypes dropped the wrong grants: %v", got)
+	}
+	// RFC 7591 section 2 default, plus the refresh token this server always issues.
+	if got := registeredGrantTypes(nil); len(got) != 2 || got[0] != "authorization_code" || got[1] != "refresh_token" {
+		t.Fatalf("default grant types = %v", got)
+	}
+}
+
+// OpenID Connect Discovery 1.0 section 3 marks these REQUIRED, and this server
+// serves the same document at /.well-known/openid-configuration. A client that
+// validates against the OIDC schema - Cursor does - rejects the entire document
+// when they are missing and never reaches an endpoint:
+//
+//	path: ["subject_types_supported"]  expected array, received undefined
+func TestAuthorizationMetadataSatisfiesOIDCRequiredFields(t *testing.T) {
+	for _, path := range []string{
+		"/.well-known/oauth-authorization-server",
+		"/.well-known/openid-configuration",
+	} {
+		recorder := httptest.NewRecorder()
+		testServer(t).Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s: got %d", path, recorder.Code)
+		}
+		var metadata map[string]any
+		if err := json.Unmarshal(recorder.Body.Bytes(), &metadata); err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range []string{
+			"issuer",
+			"authorization_endpoint",
+			"token_endpoint",
+			"jwks_uri",
+			"response_types_supported",
+			"subject_types_supported",
+			"id_token_signing_alg_values_supported",
+		} {
+			value, ok := metadata[field]
+			if !ok {
+				t.Fatalf("%s: metadata is missing the required field %q", path, field)
+			}
+			if field == "subject_types_supported" || field == "id_token_signing_alg_values_supported" ||
+				field == "response_types_supported" {
+				list, isList := value.([]any)
+				if !isList || len(list) == 0 {
+					t.Fatalf("%s: %q must be a non-empty array, got %#v", path, field, value)
+				}
+			}
+		}
+	}
+}
+
+// RFC 9728 documents describe one resource. A multi-resource deployment that
+// answers the bare well-known path with an arbitrary entry hands the client an
+// audience it did not ask for, and every token it then gets is rejected by the
+// server it meant to call.
+func TestProtectedResourceMetadataIsPerResource(t *testing.T) {
+	instance := multiResourceServer(t)
+
+	if code, _ := getMetadata(t, instance, "/.well-known/oauth-protected-resource"); code != http.StatusNotFound {
+		t.Fatalf("bare path with two resources = %d, want 404", code)
+	}
+	if code, _ := getMetadata(t, instance, "/.well-known/oauth-protected-resource/nope/mcp"); code != http.StatusNotFound {
+		t.Fatalf("unknown resource = %d, want 404", code)
+	}
+
+	for path, want := range map[string]string{
+		"/ping/mcp": "https://mcp.example.com/ping/mcp",
+		"/echo/mcp": "https://mcp.example.com/echo/mcp",
+	} {
+		code, body := getMetadata(t, instance, "/.well-known/oauth-protected-resource"+path)
+		if code != http.StatusOK {
+			t.Fatalf("%s = %d, want 200", path, code)
+		}
+		if body["resource"] != want {
+			t.Fatalf("%s resource = %v, want %s", path, body["resource"], want)
+		}
+		if _, present := body["resources"]; present {
+			t.Fatalf("%s still advertises the non-standard resources member: %v", path, body)
+		}
+		if servers, _ := body["authorization_servers"].([]any); len(servers) != 1 {
+			t.Fatalf("%s authorization_servers = %v", path, body["authorization_servers"])
+		}
+	}
+}
+
+// A single-resource deployment stays answerable at the bare path.
+func TestProtectedResourceMetadataBarePathForSingleResource(t *testing.T) {
+	code, body := getMetadata(t, testServer(t), "/.well-known/oauth-protected-resource")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if body["resource"] != "http://localhost:8081/mcp" {
+		t.Fatalf("resource = %v", body["resource"])
+	}
+	scopes, _ := body["scopes_supported"].([]any)
+	if len(scopes) != 1 || scopes[0] != "tools:read" {
+		t.Fatalf("scopes_supported = %v", body["scopes_supported"])
+	}
+	if methods, _ := body["bearer_methods_supported"].([]any); len(methods) != 1 || methods[0] != "header" {
+		t.Fatalf("bearer_methods_supported = %v", body["bearer_methods_supported"])
+	}
+}
+
+func multiResourceServer(t *testing.T) *Server {
+	t.Helper()
+	config := Config{Issuer: "http://localhost:8080", Resources: []string{"https://mcp.example.com/ping/mcp", "https://mcp.example.com/echo/mcp"}, AccessTokenTTL: time.Minute, RefreshTokenTTL: time.Hour, AuthorizationCodeTTL: time.Minute, AllowedScopes: []string{"tools:read"}, RegistrationEnabled: true, LocalDevelopment: true, LocalSubject: "test-user"}
+	instance, err := NewServer(config, NewMemoryStore(), LocalIdentityProvider{Subject: "test-user"}, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return instance
+}
+
+func getMetadata(t *testing.T, instance *Server, path string) (int, map[string]any) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+	var body map[string]any
+	_ = json.Unmarshal(recorder.Body.Bytes(), &body)
+	return recorder.Code, body
+}
+
+// X-Forwarded-Proto is set by the caller. Honouring it unconditionally turns
+// RequireHTTPS into a header anyone who can reach this process may set, which
+// is no guard at all — so it counts only when the deployment declares that a
+// trusted proxy terminates TLS and is the only route in.
+func TestHTTPSGuardIgnoresForwardedProtoUnlessProxyIsTrusted(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		trustProxy bool
+		forwarded  string
+		want       int
+	}{
+		"untrusted proxy, spoofed header": {false, "https", http.StatusBadRequest},
+		"untrusted proxy, no header":      {false, "", http.StatusBadRequest},
+		"trusted proxy, header present":   {true, "https", http.StatusOK},
+		"trusted proxy, header absent":    {true, "", http.StatusBadRequest},
+		"trusted proxy, header is http":   {true, "http", http.StatusBadRequest},
+	} {
+		t.Run(name, func(t *testing.T) {
+			instance := testServer(t)
+			instance.Config.RequireHTTPS = true
+			instance.Config.TrustProxyTLS = testCase.trustProxy
+
+			request := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+			if testCase.forwarded != "" {
+				request.Header.Set("X-Forwarded-Proto", testCase.forwarded)
+			}
+			recorder := httptest.NewRecorder()
+			instance.Handler().ServeHTTP(recorder, request)
+
+			if recorder.Code != testCase.want {
+				t.Fatalf("status = %d, want %d (body %s)", recorder.Code, testCase.want, recorder.Body.String())
+			}
+			if testCase.want == http.StatusBadRequest && !strings.Contains(recorder.Body.String(), "MCP_AUTH_TRUST_PROXY_TLS") {
+				t.Fatalf("rejection should name the setting that fixes it, got %s", recorder.Body.String())
+			}
+		})
+	}
+}
