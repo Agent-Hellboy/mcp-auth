@@ -66,7 +66,7 @@ disable it only for a controlled local test transport.
 
 ## Go
 
-Import `github.com/Agent-Hellboy/mcp-auth/auth-client/go/mcpauth`, configure `JWTVerifier`, and use `DiscoverProtectedResource`, `DiscoverAuthorizationServer`, `ParseWWWAuthenticate`, and `TokenExchangeClient`. The Go SDK uses the standard library and supports bounded token caching. Install the client module at the `auth-client/go/v0.1.0` release tag.
+Import `github.com/Agent-Hellboy/mcp-auth/auth-client/go/mcpauth`, configure `JWTVerifier`, and use `DiscoverProtectedResource`, `DiscoverAuthorizationServer`, `ParseWWWAuthenticate`, and `TokenExchangeClient`. The Go SDK uses the standard library and supports bounded token caching. Install the client module at the `auth-client/go/v0.2.0` release tag.
 
 ## Publishing protected resource metadata
 
