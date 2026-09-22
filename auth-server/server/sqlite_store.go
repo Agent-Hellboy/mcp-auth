@@ -65,7 +65,14 @@ CREATE TABLE IF NOT EXISTS upstream_sessions (
 );`,
 	2: `ALTER TABLE clients ADD COLUMN algorithm TEXT NOT NULL DEFAULT 'RS256';`,
 	3: `ALTER TABLE refresh_tokens ADD COLUMN family_id TEXT NOT NULL DEFAULT '';`,
-	4: `ALTER TABLE clients ADD COLUMN dynamic_registration INTEGER NOT NULL DEFAULT 0;`,
+	4: `ALTER TABLE clients ADD COLUMN dynamic_registration INTEGER NOT NULL DEFAULT 0;
+-- Every interactive client in a pre-migration database was created through
+-- POST /register, so its name is application-supplied. Backfilling 0 would
+-- present those names on the consent page without the unverified label,
+-- implying this server had verified them. Mark them dynamic and let startup
+-- rewrite the operator-provisioned ones: loadResourceClients saves its
+-- clients with DynamicRegistration false on every boot.
+UPDATE clients SET dynamic_registration = 1;`,
 }
 
 const freshSchema = `

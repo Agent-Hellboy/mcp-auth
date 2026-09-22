@@ -184,9 +184,14 @@ VALUES ('legacy-client','legacy','["https://client.example.com/callback"]','none
 	}
 	defer store.Close()
 
+	// A client already in a pre-migration database was created through POST
+	// /register, so its name is application-supplied and the consent page must
+	// label it unverified. Migrating it to dynamic_registration = 0 would have
+	// implied this server had verified that name. Operator-provisioned clients
+	// are rewritten with DynamicRegistration false when startup reloads them.
 	legacy, err := store.GetClient("legacy-client")
-	if err != nil || legacy.DynamicRegistration {
-		t.Fatalf("pre-existing client did not survive migration: %v, %+v", err, legacy)
+	if err != nil || !legacy.DynamicRegistration {
+		t.Fatalf("pre-existing client should migrate as dynamically registered: %v, %+v", err, legacy)
 	}
 	if err := store.SaveClient(Client{ID: "resource-server", TokenEndpointAuth: "private_key_jwt", PublicKeyPEM: "test"}); err != nil {
 		t.Fatalf("save client using migrated column: %v", err)
