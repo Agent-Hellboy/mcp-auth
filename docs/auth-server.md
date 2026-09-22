@@ -100,6 +100,12 @@ Important settings:
   either of them must set this to `true`, or the first connection attempt fails with no obvious
   cause pointing back to this setting. Combine it with `AllowedClientRedirectURIs` (below) rather
   than leaving registration fully open if the deployment can enumerate its expected clients.
+- `MCP_AUTH_CLIENT_ID_METADATA_ENABLED`: accept an https URL as a `client_id` and fetch the OAuth
+  Client ID Metadata Document it names. Defaults to `false`, because the fetch target is chosen by
+  an unauthenticated caller. While it is off, a URL `client_id` is reported as an unknown client.
+- `MCP_AUTH_CLIENT_ID_METADATA_HOSTS`: comma-separated hosts a metadata document may be fetched
+  from. Empty allows any public host. Non-public destinations are refused at dial time regardless,
+  after resolution, so a hostname pointing at a private range cannot be reached.
 - `MCP_AUTH_ALLOWED_SCOPES`: space-independent comma-separated scope allowlist.
 - `MCP_AUTH_TRUSTED_ORIGINS`: exact CORS origins; keep this restrictive.
 - `MCP_AUTH_REQUIRE_HTTPS`: enable outside local development. With a plain-HTTP `MCP_AUTH_ISSUER`,

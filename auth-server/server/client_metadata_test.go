@@ -57,6 +57,7 @@ func TestClientMetadataDocumentAuthorize(t *testing.T) {
 	client := metadata.Client()
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	instance.ClientMetadataClient = client
+	instance.Config.ClientIDMetadataEnabled = true
 
 	query := url.Values{
 		"response_type":         {"code"},
@@ -144,6 +145,7 @@ func TestClientMetadataFetchRefusesPrivateHostname(t *testing.T) {
 	instance := testServer(t)
 	instance.ClientMetadataClient = nil
 	instance.Config.LocalDevelopment = false
+	instance.Config.ClientIDMetadataEnabled = true
 	// localtest.me and its subdomains resolve to 127.0.0.1, so this is a
 	// hostname that validateClientMetadataURL accepts and only the dialer can
 	// refuse. A resolver failure is also a refusal, which is the safe outcome.
@@ -156,3 +158,47 @@ func TestClientMetadataFetchRefusesPrivateHostname(t *testing.T) {
 		t.Fatalf("expected a clientMetadataError, got %T: %v", err, err)
 	}
 }
+
+// TestClientIDMetadataDisabledByDefault covers the feature gate. A URL
+// client_id makes this server fetch an address an unauthenticated caller
+// chose, so it is opt-in like dynamic registration. Until an operator enables
+// it, a URL is reported as an unknown client and no request is made.
+func TestClientIDMetadataDisabledByDefault(t *testing.T) {
+	instance := testServer(t)
+	fetched := false
+	instance.ClientMetadataClient = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		fetched = true
+		return nil, errors.New("must not be called")
+	})}
+	if instance.Config.ClientIDMetadataEnabled {
+		t.Fatal("ClientIDMetadataEnabled should default to false")
+	}
+	_, err := instance.resolveClient(context.Background(), "https://client.example.com/client.json")
+	if !errors.Is(err, errUnknownClient) {
+		t.Fatalf("resolveClient err = %v, want errUnknownClient", err)
+	}
+	if fetched {
+		t.Fatal("resolveClient fetched a metadata document while the feature was disabled")
+	}
+}
+
+func TestClientIDMetadataHostAllowlist(t *testing.T) {
+	instance := testServer(t)
+	instance.Config.ClientIDMetadataEnabled = true
+	instance.Config.ClientIDMetadataHosts = []string{"client.example.com"}
+	fetched := false
+	instance.ClientMetadataClient = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		fetched = true
+		return nil, errors.New("must not be called")
+	})}
+	if _, err := instance.fetchClientMetadata(context.Background(), "https://other.example.com/client.json"); err == nil {
+		t.Fatal("fetchClientMetadata accepted a host outside the allowlist")
+	}
+	if fetched {
+		t.Fatal("a host outside the allowlist was still fetched")
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }

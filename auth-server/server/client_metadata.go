@@ -50,6 +50,27 @@ func validateClientMetadataURL(raw string) error {
 	return nil
 }
 
+// allowedMetadataHost applies the operator's host allowlist when one is set.
+// With no allowlist any public host is fetchable, which is what the Client ID
+// Metadata Document draft intends; a deployment that wants a closed set names
+// it in MCP_AUTH_CLIENT_ID_METADATA_HOSTS.
+func (s *Server) allowedMetadataHost(clientID string) error {
+	if len(s.Config.ClientIDMetadataHosts) == 0 {
+		return nil
+	}
+	parsed, err := url.Parse(clientID)
+	if err != nil {
+		return errors.New("client_id metadata URL is not parseable")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	for _, allowed := range s.Config.ClientIDMetadataHosts {
+		if host == strings.ToLower(strings.TrimSpace(allowed)) {
+			return nil
+		}
+	}
+	return errors.New("client_id metadata host is not allowed")
+}
+
 func (s *Server) metadataHTTPClient() *http.Client {
 	if s.ClientMetadataClient != nil {
 		return s.ClientMetadataClient
@@ -142,6 +163,9 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (Clie
 	if err := validateClientMetadataURL(clientID); err != nil {
 		return Client{}, &clientMetadataError{detail: err.Error()}
 	}
+	if err := s.allowedMetadataHost(clientID); err != nil {
+		return Client{}, &clientMetadataError{detail: err.Error()}
+	}
 	ctx, cancel := context.WithTimeout(ctx, clientMetadataTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, clientID, nil)
@@ -197,6 +221,12 @@ func (s *Server) resolveClient(ctx context.Context, clientID string) (Client, er
 		return Client{}, errUnknownClient
 	}
 	if isClientIDURL(clientID) {
+		if !s.Config.ClientIDMetadataEnabled {
+			// Not enabled, so a URL is just an unknown client rather than a
+			// fetch. Reported as unknown so probing cannot tell the feature
+			// apart from an unregistered client id.
+			return Client{}, errUnknownClient
+		}
 		return s.fetchClientMetadata(ctx, clientID)
 	}
 	client, err := s.Store.GetClient(clientID)

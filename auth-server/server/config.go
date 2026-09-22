@@ -14,15 +14,23 @@ type Config struct {
 	Issuer    string
 	Resources []string
 	// Resource is retained for source compatibility; use Resources for new code.
-	Resource                    string
-	ListenAddr                  string
-	AccessTokenTTL              time.Duration
-	RefreshTokenTTL             time.Duration
-	AuthorizationCodeTTL        time.Duration
-	AllowedScopes               []string
-	TrustedOrigins              []string
-	PrivateKeyFile              string
-	RegistrationEnabled         bool
+	Resource             string
+	ListenAddr           string
+	AccessTokenTTL       time.Duration
+	RefreshTokenTTL      time.Duration
+	AuthorizationCodeTTL time.Duration
+	AllowedScopes        []string
+	TrustedOrigins       []string
+	PrivateKeyFile       string
+	RegistrationEnabled  bool
+	// ClientIDMetadataEnabled turns on OAuth Client ID Metadata Documents.
+	// Off by default: a URL client_id makes this server issue an outbound GET
+	// to an address an unauthenticated caller chose, so an operator opts in
+	// the same way they opt in to dynamic registration.
+	ClientIDMetadataEnabled bool
+	// ClientIDMetadataHosts optionally restricts which hosts a client_id
+	// metadata document may be fetched from. Empty means any public host.
+	ClientIDMetadataHosts       []string
 	LocalDevelopment            bool
 	LocalSubject                string
 	LocalClientID               string
@@ -187,6 +195,8 @@ func ConfigFromEnv() Config {
 		TrustedOrigins:              csvEnv("MCP_AUTH_TRUSTED_ORIGINS", nil),
 		PrivateKeyFile:              os.Getenv("MCP_AUTH_PRIVATE_KEY_FILE"),
 		RegistrationEnabled:         boolEnv("MCP_AUTH_REGISTRATION_ENABLED", false),
+		ClientIDMetadataEnabled:     boolEnv("MCP_AUTH_CLIENT_ID_METADATA_ENABLED", false),
+		ClientIDMetadataHosts:       csvEnv("MCP_AUTH_CLIENT_ID_METADATA_HOSTS", nil),
 		LocalDevelopment:            boolEnv("MCP_AUTH_LOCAL_DEVELOPMENT", false),
 		LocalSubject:                env("MCP_AUTH_LOCAL_SUBJECT", "local-user"),
 		LocalClientID:               os.Getenv("MCP_AUTH_LOCAL_CLIENT_ID"),
