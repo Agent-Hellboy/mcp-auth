@@ -342,6 +342,9 @@ func assertConsentHeaders(t *testing.T, recorder *httptest.ResponseRecorder) {
 	if got := recorder.Header().Get("Content-Security-Policy"); got != consentDocumentCSP {
 		t.Fatalf("Content-Security-Policy = %q", got)
 	}
+	if strings.Contains(recorder.Header().Get("Content-Security-Policy"), "form-action") {
+		t.Fatal("consent CSP must not block the redirect to the upstream identity provider")
+	}
 	if got := recorder.Header().Get("X-Frame-Options"); got != "DENY" {
 		t.Fatalf("X-Frame-Options = %q", got)
 	}

@@ -60,8 +60,10 @@ func validHTTPSURL(value string) error {
 // consentDocumentCSP allows the document's own <style> element and nothing
 // else. style-src 'unsafe-inline' is what permits a style element when the
 // page has no nonce. There are no event handlers and no external assets.
-// script-src is covered by default-src 'none'.
-const consentDocumentCSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'"
+// script-src is covered by default-src 'none'. Do not set form-action here:
+// approving consent redirects the browser to the configured upstream identity
+// provider, and a form-action policy can block that cross-origin redirect.
+const consentDocumentCSP = "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"
 
 func setConsentDocumentHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
