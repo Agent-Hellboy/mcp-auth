@@ -313,3 +313,45 @@ async def test_jwks_request_uses_explicit_timeout() -> None:
     timeout = seen["timeout"]
     assert isinstance(timeout, dict)
     assert timeout["read"] == 10
+
+
+@pytest.mark.asyncio
+async def test_stale_jwks_still_verifies_while_refetch_is_throttled() -> None:
+    """A cached key outlives its TTL rather than failing inside the throttle window.
+
+    jwks_min_fetch throttles refetches. When it returned None a kid already in
+    the cache was reported as "signing key was not found", so every token was
+    rejected for the gap between jwks_ttl and jwks_min_fetch.
+    """
+    private, jwk = key_pair()
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"keys": [jwk]})
+
+    token = jwt.encode(
+        {
+            "iss": "https://auth.example.com",
+            "sub": "user",
+            "aud": "https://mcp.example.com",
+            "exp": time.time() + 300,
+        },
+        private,
+        algorithm="RS256",
+        headers={"kid": jwk["kid"], "typ": "at+jwt"},
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        verifier = JWTVerifier(
+            "https://auth.example.com/jwks",
+            "https://auth.example.com",
+            "https://mcp.example.com",
+            http_client=client,
+            jwks_ttl=0.01,
+            jwks_min_fetch=30.0,
+        )
+        assert (await verifier.verify(token)).subject == "user"
+        await asyncio.sleep(0.05)
+        assert (await verifier.verify(token)).subject == "user"
+    assert calls == 1

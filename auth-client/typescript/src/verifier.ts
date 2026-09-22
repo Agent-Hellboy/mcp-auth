@@ -1,8 +1,9 @@
 import { createPublicKey, verify as verifySignature, type JsonWebKey } from "node:crypto";
 import { isIP } from "node:net";
 
+import { DEFAULT_TIMEOUT_MS, requestTimeout } from "./timeout.js";
+
 const MAX_JWKS_BYTES = 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_JWKS_MIN_FETCH_MS = 30_000;
 const DEFAULT_UNKNOWN_KEY_TTL_MS = 30_000;
 
@@ -164,21 +165,16 @@ export class JWTVerifier {
       if (this.loading) return this.loading;
     }
     if (this.loading) return this.loading;
-    const requestSignal = this.signalFor(signal);
+    const { signal: requestSignal, release } = requestTimeout(this.timeoutMs, signal);
     let pending: Promise<void>;
     pending = this.fetchJwks(requestSignal).finally(() => {
+      release();
       if (this.loading === pending) this.loading = undefined;
     });
     this.loading = pending;
     return pending;
   }
 
-  private signalFor(signal?: AbortSignal): AbortSignal | undefined {
-    if (this.timeoutMs <= 0) return signal;
-    const timeout = AbortSignal.timeout(this.timeoutMs);
-    if (!signal) return timeout;
-    return AbortSignal.any([signal, timeout]);
-  }
 
   private async fetchJwks(signal?: AbortSignal): Promise<void> {
     this.validateJwksUri();

@@ -1,11 +1,12 @@
 import { createHash, randomUUID, sign } from "node:crypto";
 
+import { DEFAULT_TIMEOUT_MS, requestTimeout } from "./timeout.js";
+
 const EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
 const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
 const ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 const DEFAULT_CACHE_ENTRIES = 128;
 const DEFAULT_EXPIRY_MARGIN_MS = 30_000;
-const DEFAULT_TIMEOUT_MS = 10_000;
 
 function encode(value: object): string { return Buffer.from(JSON.stringify(value)).toString("base64url"); }
 
@@ -124,28 +125,26 @@ export class TokenExchangeClient {
     const init: RequestInit = {
       method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: form,
     };
-    const requestSignal = this.signalFor(signal);
+    const { signal: requestSignal, release } = requestTimeout(this.timeoutMs, signal);
     if (requestSignal) init.signal = requestSignal;
-    const response = await this.fetcher(this.options.endpoint, init);
-    if (!response.ok) throw new Error(`token exchange returned HTTP ${response.status}`);
-    const data = await response.json() as Record<string, unknown>;
-    if (typeof data.access_token !== "string") throw new Error("token exchange response has no access_token");
-    const expiresIn = typeof data.expires_in === "number" && data.expires_in > 0 ? data.expires_in : 300;
-    const token: ExchangedToken = {
-      accessToken: data.access_token,
-      tokenType: typeof data.token_type === "string" ? data.token_type : "Bearer",
-      expiresAt: Date.now() + expiresIn * 1000,
-      audience,
-      scopes: new Set(typeof data.scope === "string" ? data.scope.split(/\s+/).filter(Boolean) : []),
-    };
-    this.cache.set(key, token);
-    return token;
+    try {
+      const response = await this.fetcher(this.options.endpoint, init);
+      if (!response.ok) throw new Error(`token exchange returned HTTP ${response.status}`);
+      const data = await response.json() as Record<string, unknown>;
+      if (typeof data.access_token !== "string") throw new Error("token exchange response has no access_token");
+      const expiresIn = typeof data.expires_in === "number" && data.expires_in > 0 ? data.expires_in : 300;
+      const token: ExchangedToken = {
+        accessToken: data.access_token,
+        tokenType: typeof data.token_type === "string" ? data.token_type : "Bearer",
+        expiresAt: Date.now() + expiresIn * 1000,
+        audience,
+        scopes: new Set(typeof data.scope === "string" ? data.scope.split(/\s+/).filter(Boolean) : []),
+      };
+      this.cache.set(key, token);
+      return token;
+    } finally {
+      release();
+    }
   }
 
-  private signalFor(signal?: AbortSignal): AbortSignal | undefined {
-    if (this.timeoutMs <= 0) return signal;
-    const timeout = AbortSignal.timeout(this.timeoutMs);
-    if (!signal) return timeout;
-    return AbortSignal.any([signal, timeout]);
-  }
 }

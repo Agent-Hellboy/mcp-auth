@@ -130,7 +130,12 @@ class JWTVerifier:
             if isinstance(key, dict) and fresh:
                 return key
             if self._last_refresh and now - self._last_refresh < self._jwks_min_fetch:
-                return None
+                # Throttled. A key already in the cache still verifies the
+                # signature, so serve it rather than rejecting a valid token:
+                # returning None here reported "signing key was not found" for
+                # a kid sitting in self._jwks whenever jwks_ttl was shorter
+                # than jwks_min_fetch. Only a genuinely absent kid fails.
+                return key if isinstance(key, dict) else None
             await self._fetch_jwks()
             found = self._jwks.get(kid)
             if isinstance(found, dict):
