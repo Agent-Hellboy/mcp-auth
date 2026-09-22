@@ -19,12 +19,14 @@ import (
 // require the upstream provider to trust an mcp-auth-issued subject_token.
 //
 // It cannot mint a credential scoped for an arbitrary requested audience the
-// login session wasn't already scoped for: ExchangeRequest.Audience and
-// .Scope are intentionally not used here. A deployment that needs a token
-// for a specific downstream audience the login flow didn't already request
-// should use the "rfc8693" strategy against a provider that supports it, or
-// request the needed scopes in the connector's own upstream authorization
-// request instead.
+// login session wasn't already scoped for. ExchangeRequest.Audience, Scope,
+// and RequestedTokenType are advisory: they are not applied, and the returned
+// token is not an RFC 8693 audience-scoped token. The HTTP response still
+// carries issued_token_type for an access token because that is what this
+// strategy returns. A deployment that needs a token for a specific downstream
+// audience the login flow didn't already request should use the "rfc8693"
+// strategy against a provider that supports it, or request the needed scopes
+// in the connector's own upstream authorization request instead.
 type UpstreamSessionExchanger struct {
 	Store     Store
 	Connector ConnectorConfig

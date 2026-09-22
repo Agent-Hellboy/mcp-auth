@@ -33,6 +33,7 @@ func discoverOIDCConfiguration(ctx context.Context, client *http.Client, issuer 
 	if err != nil {
 		return discoveredEndpoints{}, fmt.Errorf("create OIDC discovery request: %w", err)
 	}
+	request.Header.Set("Accept", "application/json")
 	response, err := client.Do(request)
 	if err != nil {
 		return discoveredEndpoints{}, fmt.Errorf("fetch OIDC discovery document: %w", err)
@@ -42,6 +43,7 @@ func discoverOIDCConfiguration(ctx context.Context, client *http.Client, issuer 
 		return discoveredEndpoints{}, fmt.Errorf("OIDC discovery document returned HTTP %d", response.StatusCode)
 	}
 	var document struct {
+		Issuer                string `json:"issuer"`
 		AuthorizationEndpoint string `json:"authorization_endpoint"`
 		TokenEndpoint         string `json:"token_endpoint"`
 		JWKSURI               string `json:"jwks_uri"`
@@ -49,6 +51,13 @@ func discoverOIDCConfiguration(ctx context.Context, client *http.Client, issuer 
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxJWKSResponseBytes)).Decode(&document); err != nil {
 		return discoveredEndpoints{}, fmt.Errorf("decode OIDC discovery document: %w", err)
+	}
+	// OpenID Connect Discovery 1.0 §4.3: the returned issuer must be the one
+	// that was requested. A single trailing slash is ignored so a connector
+	// that writes the issuer with or without one still matches. A discovered
+	// jwks_uri may be on a different host; some providers publish keys that way.
+	if strings.TrimRight(document.Issuer, "/") != strings.TrimRight(issuer, "/") {
+		return discoveredEndpoints{}, fmt.Errorf("OIDC discovery issuer %q does not match requested issuer %q", document.Issuer, issuer)
 	}
 	return discoveredEndpoints{
 		AuthorizationEndpoint: document.AuthorizationEndpoint,

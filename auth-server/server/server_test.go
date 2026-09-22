@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -443,6 +444,13 @@ func TestTokenExchangeWithValidPrivateKeyJWTSucceedsOnce(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected exchange to succeed, got %d: %s", recorder.Code, recorder.Body.String())
 	}
+	var exchanged map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &exchanged); err != nil {
+		t.Fatal(err)
+	}
+	if exchanged["issued_token_type"] != issuedTokenTypeAccessToken {
+		t.Fatalf("issued_token_type = %v, want %s", exchanged["issued_token_type"], issuedTokenTypeAccessToken)
+	}
 
 	replay := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	replay.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -848,5 +856,123 @@ func TestHTTPSGuardIgnoresForwardedProtoUnlessProxyIsTrusted(t *testing.T) {
 				t.Fatalf("rejection should name the setting that fixes it, got %s", recorder.Body.String())
 			}
 		})
+	}
+}
+
+type stubExchanger struct{ err error }
+
+func (s stubExchanger) Exchange(context.Context, ExchangeRequest) (ExchangeResponse, error) {
+	return ExchangeResponse{}, s.err
+}
+
+type timeoutNetError struct{}
+
+func (timeoutNetError) Error() string   { return "dial tcp: connection refused" }
+func (timeoutNetError) Timeout() bool   { return true }
+func (timeoutNetError) Temporary() bool { return true }
+
+func TestTokenExchangeUpstreamFaultIsServerError(t *testing.T) {
+	var output bytes.Buffer
+	config := Config{Issuer: "http://localhost:8080", Resource: "http://localhost:8081/mcp", AccessTokenTTL: time.Minute, RefreshTokenTTL: time.Hour, AuthorizationCodeTTL: time.Minute, AllowedScopes: []string{"tools:read"}, RegistrationEnabled: true, LocalDevelopment: true, LocalSubject: "test-user"}
+	instance, err := NewServer(config, NewMemoryStore(), LocalIdentityProvider{Subject: "test-user"}, stubExchanger{err: fmt.Errorf("no upstream session for subject: missing")}, &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := registerResourceClient(t, instance, "resource-server")
+	subjectToken, err := instance.KeyProvider.Sign(context.Background(), instance.Config.Issuer, "user-1", instance.Config.Resource, []string{"tools:read"}, time.Minute, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertion := signTestClientAssertion(t, key, "resource-server", instance.Config.Issuer+"/token")
+	form := exchangeForm(subjectToken, "resource-server", assertion)
+	request := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("missing upstream session status = %d, want 502: %s", recorder.Code, recorder.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"] != "server_error" || body["error_description"] == "" {
+		t.Fatalf("body = %#v, want server_error with a description", body)
+	}
+	if !strings.Contains(output.String(), `"reason":"no_upstream_session"`) {
+		t.Fatalf("audit log missing exchange reason: %s", output.String())
+	}
+
+	output.Reset()
+	instance.TokenExchanger = stubExchanger{err: timeoutNetError{}}
+	var asNet net.Error = timeoutNetError{}
+	if asNet.Timeout() != true {
+		t.Fatal("timeout error must satisfy net.Error")
+	}
+	assertion = signTestClientAssertion(t, key, "resource-server", instance.Config.Issuer+"/token")
+	form = exchangeForm(subjectToken, "resource-server", assertion)
+	request = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder = httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("upstream network status = %d, want 503: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(output.String(), `"reason":"upstream_unavailable"`) {
+		t.Fatalf("audit log missing upstream_unavailable: %s", output.String())
+	}
+
+	output.Reset()
+	instance.TokenExchanger = stubExchanger{err: ErrUnacceptableAudience}
+	assertion = signTestClientAssertion(t, key, "resource-server", instance.Config.Issuer+"/token")
+	form = exchangeForm(subjectToken, "resource-server", assertion)
+	request = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder = httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "invalid_target") {
+		t.Fatalf("unacceptable audience = %d %s, want 400 invalid_target", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(output.String(), `"reason":"unacceptable_audience"`) {
+		t.Fatalf("audit log missing unacceptable_audience: %s", output.String())
+	}
+}
+
+func TestRegistrationFailureIsAudited(t *testing.T) {
+	var output bytes.Buffer
+	config := Config{Issuer: "http://localhost:8080", Resource: "http://localhost:8081/mcp", AccessTokenTTL: time.Minute, AllowedScopes: []string{"tools:read"}, RegistrationEnabled: true, LocalDevelopment: true, LocalSubject: "test-user"}
+	instance, err := NewServer(config, NewMemoryStore(), LocalIdentityProvider{Subject: "test-user"}, nil, &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance.Config.AllowedClientRedirectURIs = []string{"https://client.example.com/callback"}
+	request := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(`{"client_name":"x","redirect_uris":["https://nope.example.com/callback"],"token_endpoint_auth_method":"none"}`))
+	recorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+	logged := output.String()
+	if !strings.Contains(logged, `"event":"client_registration"`) || !strings.Contains(logged, `"reason":"redirect_uri_not_allowed"`) || !strings.Contains(logged, "https://nope.example.com/callback") {
+		t.Fatalf("registration failure was not audited with reason and redirect_uri: %s", logged)
+	}
+}
+
+func TestAuthorizeUnregisteredClientIsAudited(t *testing.T) {
+	var output bytes.Buffer
+	config := Config{Issuer: "http://localhost:8080", Resource: "http://localhost:8081/mcp", AccessTokenTTL: time.Minute, AllowedScopes: []string{"tools:read"}, LocalDevelopment: true, LocalSubject: "test-user"}
+	instance, err := NewServer(config, NewMemoryStore(), LocalIdentityProvider{Subject: "test-user"}, nil, &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/authorize?client_id=missing&redirect_uri=http%3A%2F%2F127.0.0.1%3A9%2Fcallback", nil)
+	recorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+	logged := output.String()
+	if !strings.Contains(logged, `"event":"authorization_rejected"`) || !strings.Contains(logged, `"reason":"unregistered_client"`) || !strings.Contains(logged, "http://127.0.0.1:9/callback") {
+		t.Fatalf("unregistered client was not audited: %s", logged)
 	}
 }

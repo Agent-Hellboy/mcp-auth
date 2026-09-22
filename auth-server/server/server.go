@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -24,7 +25,10 @@ type Server struct {
 	IdentityProvider IdentityProvider
 	TokenExchanger   TokenExchanger
 	Audit            *AuditLogger
-	now              func() time.Time
+	// ClientMetadataClient fetches OAuth Client ID Metadata Documents.
+	// Nil uses a client with a short timeout that does not follow redirects.
+	ClientMetadataClient *http.Client
+	now                  func() time.Time
 }
 
 type AuthorizationRequest struct {
@@ -231,6 +235,12 @@ func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	request, err := s.parseAuthorizationRequest(r)
 	if err != nil {
+		s.auditAuthorizationFailure(request, err)
+		var metadata *clientMetadataError
+		if errors.As(err, &metadata) {
+			oauthErrorWithDescription(w, http.StatusBadRequest, "invalid_client", metadata.detail)
+			return
+		}
 		oauthError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -368,14 +378,14 @@ func (s *Server) completeAuthorization(w http.ResponseWriter, r *http.Request, p
 func (s *Server) parseAuthorizationRequest(r *http.Request) (AuthorizationRequest, error) {
 	q := r.URL.Query()
 	request := AuthorizationRequest{ClientID: q.Get("client_id"), RedirectURI: q.Get("redirect_uri"), State: q.Get("state"), CodeChallenge: q.Get("code_challenge"), Resource: q.Get("resource"), ResponseType: q.Get("response_type"), Nonce: q.Get("nonce"), Scope: strings.Fields(q.Get("scope"))}
-	client, err := s.Store.GetClient(request.ClientID)
+	client, err := s.resolveClient(r.Context(), request.ClientID)
 	if err != nil {
-		return request, fmt.Errorf("unknown client")
+		return request, err
 	}
 	if request.ResponseType != "code" || request.CodeChallenge == "" || q.Get("code_challenge_method") != "S256" {
 		return request, fmt.Errorf("code, response_type=code, and S256 PKCE are required")
 	}
-	if !contains(client.RedirectURIs, request.RedirectURI) || !validRedirect(request.RedirectURI) {
+	if !s.clientRedirectPermitted(client, request.RedirectURI) || !validRedirect(request.RedirectURI) {
 		return request, fmt.Errorf("redirect_uri is not registered")
 	}
 	resources := s.Config.configuredResources()
@@ -499,12 +509,51 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request, client Client)
 	subject, _ := subjectClaims["sub"].(string)
 	response, err := s.TokenExchanger.Exchange(r.Context(), ExchangeRequest{Subject: subject, SubjectToken: subjectToken, RequestedTokenType: r.FormValue("requested_token_type"), Audience: r.FormValue("audience"), Scope: strings.Fields(r.FormValue("scope"))})
 	if err != nil {
-		s.Audit.Event("token_exchange", "failure", map[string]any{"client_id": client.ID, "audience": r.FormValue("audience")})
-		oauthError(w, http.StatusBadRequest, "invalid_target")
+		status, reason, description := classifyExchangeError(err)
+		s.Audit.Event("token_exchange", "failure", map[string]any{"client_id": client.ID, "audience": r.FormValue("audience"), "reason": reason})
+		if reason == "unacceptable_audience" {
+			oauthError(w, status, "invalid_target")
+			return
+		}
+		oauthErrorWithDescription(w, status, "server_error", description)
 		return
 	}
 	s.Audit.Event("token_exchange", "success", map[string]any{"client_id": client.ID, "subject": subjectClaims["sub"], "audience": r.FormValue("audience")})
-	writeJSON(w, http.StatusOK, map[string]any{"access_token": response.AccessToken, "token_type": response.TokenType, "expires_in": response.ExpiresIn, "scope": response.Scope})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"access_token":      response.AccessToken,
+		"issued_token_type": issuedTokenTypeAccessToken,
+		"token_type":        response.TokenType,
+		"expires_in":        response.ExpiresIn,
+		"scope":             response.Scope,
+	})
+}
+
+// issuedTokenTypeAccessToken is the RFC 8693 §2.2.1 token type this endpoint returns.
+const issuedTokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
+
+// ErrUnacceptableAudience is returned by a TokenExchanger when the requested
+// audience itself is not acceptable. Other exchanger errors are upstream faults
+// and must not be reported as invalid_target.
+var ErrUnacceptableAudience = errors.New("unacceptable audience")
+
+func classifyExchangeError(err error) (status int, reason, description string) {
+	if errors.Is(err, ErrUnacceptableAudience) {
+		return http.StatusBadRequest, "unacceptable_audience", "the requested audience is not acceptable"
+	}
+	var netErr net.Error
+	message := err.Error()
+	switch {
+	case errors.As(err, &netErr):
+		return http.StatusServiceUnavailable, "upstream_unavailable", "the upstream token endpoint could not be reached"
+	case strings.Contains(message, "no upstream session"):
+		return http.StatusBadGateway, "no_upstream_session", "no upstream session is stored for this subject"
+	case strings.Contains(message, "HTTP 503"), strings.Contains(message, "HTTP 502"):
+		return http.StatusServiceUnavailable, "upstream_unavailable", "the upstream token endpoint is unavailable"
+	case strings.Contains(message, "HTTP 5"):
+		return http.StatusBadGateway, "upstream_error", "the upstream token endpoint returned an error"
+	default:
+		return http.StatusBadGateway, "upstream_exchange_failed", "the upstream token exchange failed"
+	}
 }
 
 // registeredGrantTypes reports the grants a registered client may actually use.
@@ -532,6 +581,7 @@ func registeredGrantTypes(requested []string) []string {
 
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	if !s.Config.RegistrationEnabled {
+		s.auditRegistrationFailure("registration_disabled", "")
 		oauthError(w, http.StatusNotFound, "registration_disabled")
 		return
 	}
@@ -544,15 +594,18 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		Scope             string   `json:"scope"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil || len(input.RedirectURIs) == 0 {
+		s.auditRegistrationFailure("invalid_client_metadata", "")
 		oauthError(w, http.StatusBadRequest, "invalid_client_metadata")
 		return
 	}
 	for _, redirectURI := range input.RedirectURIs {
 		if !validRedirect(redirectURI) {
+			s.auditRegistrationFailure("invalid_redirect_uri", redirectURI)
 			oauthError(w, http.StatusBadRequest, "invalid_redirect_uri")
 			return
 		}
-		if len(s.Config.AllowedClientRedirectURIs) > 0 && !contains(s.Config.AllowedClientRedirectURIs, redirectURI) {
+		if len(s.Config.AllowedClientRedirectURIs) > 0 && !redirectAllowed(s.Config.AllowedClientRedirectURIs, redirectURI) {
+			s.auditRegistrationFailure("redirect_uri_not_allowed", redirectURI)
 			oauthError(w, http.StatusBadRequest, "invalid_redirect_uri")
 			return
 		}
@@ -592,10 +645,55 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		response["token_endpoint_auth_method"] = "none"
 	}
 	if err := s.Store.SaveClient(client); err != nil {
+		s.auditRegistrationFailure("store_error", "")
 		oauthError(w, http.StatusInternalServerError, "server_error")
 		return
 	}
 	writeJSON(w, http.StatusCreated, response)
+}
+
+func (s *Server) auditRegistrationFailure(reason, redirectURI string) {
+	attrs := map[string]any{"reason": reason}
+	if redirectURI != "" {
+		attrs["redirect_uri"] = redirectURI
+	}
+	s.Audit.Event("client_registration", "failure", attrs)
+}
+
+func (s *Server) auditAuthorizationFailure(request AuthorizationRequest, err error) {
+	attrs := map[string]any{}
+	if request.ClientID != "" {
+		attrs["client_id"] = request.ClientID
+	}
+	if request.RedirectURI != "" {
+		attrs["redirect_uri"] = request.RedirectURI
+	}
+	switch {
+	case errors.Is(err, errUnknownClient):
+		attrs["reason"] = "unregistered_client"
+	default:
+		var metadata *clientMetadataError
+		if !errors.As(err, &metadata) {
+			return
+		}
+		attrs["reason"] = "client_metadata_rejected"
+	}
+	s.Audit.Event("authorization_rejected", "failure", attrs)
+}
+
+// clientRedirectPermitted checks the redirect a client may use.
+// A dynamically registered client is matched exactly against the URIs it
+// registered. A Client ID Metadata Document is matched with the allowlist
+// rules, including loopback port ignoring, and is also constrained by
+// AllowedClientRedirectURIs when that list is set.
+func (s *Server) clientRedirectPermitted(client Client, redirectURI string) bool {
+	if isClientIDURL(client.ID) {
+		if len(s.Config.AllowedClientRedirectURIs) > 0 && !redirectAllowed(s.Config.AllowedClientRedirectURIs, redirectURI) {
+			return false
+		}
+		return redirectAllowed(client.RedirectURIs, redirectURI)
+	}
+	return contains(client.RedirectURIs, redirectURI)
 }
 
 func (s *Server) revoke(w http.ResponseWriter, r *http.Request) {
@@ -614,6 +712,13 @@ func (s *Server) authenticateClient(r *http.Request) (Client, error) {
 	clientID, secret, ok := r.BasicAuth()
 	if !ok {
 		clientID, secret = r.FormValue("client_id"), r.FormValue("client_secret")
+	}
+	if isClientIDURL(clientID) {
+		client, err := s.fetchClientMetadata(r.Context(), clientID)
+		if err != nil {
+			return Client{}, err
+		}
+		return client, nil
 	}
 	client, err := s.Store.GetClient(clientID)
 	if err != nil {
@@ -745,38 +850,6 @@ func validPKCE(verifier, challenge string) bool {
 	return subtle.ConstantTimeCompare([]byte(encoded), []byte(challenge)) == 1
 }
 
-// validRedirect implements the redirect-URI shapes RFC 8252 (OAuth 2.0 for
-// Native Apps) defines, which is the profile MCP desktop clients follow.
-//
-// The Host check applies only to http/https: a private-use scheme has no
-// meaningful authority component, so requiring one rejected every native
-// client. url.Parse("claude://oauth/callback") happens to yield Host
-// "oauth", but url.Parse("com.example.app:/oauth/callback") yields "" and is
-// equally legitimate.
-func validRedirect(value string) bool {
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Fragment != "" || parsed.Scheme == "" {
-		return false
-	}
-	switch parsed.Scheme {
-	case "https":
-		return parsed.Host != ""
-	case "http":
-		// RFC 8252 §7.3: the loopback redirect must work over both address
-		// families, because the client cannot know which one the OS will
-		// hand it. url.Parse reports "::1" from Hostname() without brackets.
-		host := parsed.Hostname()
-		return host == "localhost" || host == "127.0.0.1" || host == "::1"
-	default:
-		// RFC 8252 §7.1 private-use URI scheme: claude://oauth/callback,
-		// cursor://..., com.example.app:/... . Safe to admit broadly here
-		// because PKCE S256 is mandatory and /authorize matches the
-		// registered redirect_uri exactly; a deployment that wants to
-		// narrow which clients may register uses the connector's
-		// allowed_client_redirect_uris allowlist, enforced in register().
-		return true
-	}
-}
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

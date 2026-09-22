@@ -46,6 +46,16 @@ def test_advertised_scopes_match_enforced_scopes():
     assert set(document["scopes_supported"]) == set(guard.required_scopes)
 
 
+def test_catalogue_can_be_wider_than_the_gate():
+    guard = verifier()
+    document = protected_resource_metadata(
+        guard, RESOURCE, ISSUER, scopes_supported=["sql:read", "catalog:read"]
+    )
+
+    assert guard.required_scopes == frozenset()
+    assert document["scopes_supported"] == ["catalog:read", "sql:read"]
+
+
 def test_challenge_separates_auth_params_with_commas():
     # RFC 9110 section 11.6.1. Without the comma, strict parsers reject the header.
     header = unauthorized_headers("https://mcp.example.com/.well-known/x", {"tools:read"})

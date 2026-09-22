@@ -62,6 +62,29 @@ def build_exchange_client(
     return _ExchangeAdapter(TokenExchangeClient(token_endpoint, client_auth=auth), audience)
 
 
+def scope_policy(
+    scopes_supported: list[str] | None,
+    required_scopes: set[str] | frozenset[str] | None,
+) -> tuple[frozenset[str], list[str] | None]:
+    """Split the catalogue (``scopes_supported``) from the gate (``required_scopes``).
+
+    Omitting ``required_scopes`` derives the gate from the catalogue, which keeps
+    a single-scope server short to configure. An explicit gate, including an
+    empty one, is kept as given so a tool decorator can require one scope from
+    a wider catalogue.
+    """
+
+    if required_scopes is None:
+        enforced = frozenset(scopes_supported or ())
+    else:
+        enforced = frozenset(required_scopes)
+    if scopes_supported is None:
+        advertised = sorted(enforced) or None
+    else:
+        advertised = list(scopes_supported) or None
+    return enforced, advertised
+
+
 def build_remote_auth(
     resource_url: str,
     issuer: str,
@@ -69,6 +92,7 @@ def build_remote_auth(
     scopes_supported: list[str] | None = None,
     ssrf_safe: bool = True,
     mcp_path: str = "/mcp",
+    required_scopes: set[str] | frozenset[str] | None = None,
 ) -> object:
     """Build the optional FastMCP adapter with an explicit JWKS fetch policy.
 
@@ -76,20 +100,26 @@ def build_remote_auth(
     audience tokens are validated against is the resource URL plus that path,
     so a server that mounts somewhere other than /mcp has to pass the same
     value here or every token it receives fails audience validation.
+
+    ``scopes_supported`` is the RFC 9728 catalogue. ``required_scopes`` is the
+    gate. Leave ``required_scopes`` unset to enforce the catalogue. Pass
+    ``required_scopes`` explicitly (``set()`` is meaningful) when individual
+    tools check a narrower scope.
     """
 
+    enforced, advertised = scope_policy(scopes_supported, required_scopes)
     verifier = JWTVerifier(
         jwks_uri=jwks_uri,
         issuer=issuer,
         audience=resource_url.rstrip("/") + "/" + mcp_path.strip("/"),
-        required_scopes=set(scopes_supported or ()),
+        required_scopes=enforced,
         ssrf_safe=ssrf_safe,
     )
     return RemoteAuthProvider(
         token_verifier=verifier,
         authorization_servers=[issuer],
         base_url=resource_url,
-        scopes_supported=scopes_supported,
+        scopes_supported=advertised,
         ssrf_safe=ssrf_safe,
     ).build()
 

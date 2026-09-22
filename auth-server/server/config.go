@@ -42,10 +42,12 @@ type Config struct {
 	DatabaseURL             string
 	ResourceClientsFile     string
 	// AllowedClientRedirectURIs restricts dynamic client registration
-	// (POST /register) to these exact redirect_uris when non-empty, in
-	// addition to validRedirect's scheme/host checks. It is populated from
-	// the selected connector's allowed_client_redirect_uris, not set directly
-	// from an environment variable.
+	// (POST /register) when non-empty, in addition to validRedirect.
+	// http loopback entries match scheme, hostname, and path and ignore the
+	// port. http://127.0.0.1:*, http://localhost:*, and http://[::1]:* match
+	// any path on that host. https and private-use entries match exactly.
+	// It is populated from the selected connector's
+	// allowed_client_redirect_uris, not set directly from an environment variable.
 	AllowedClientRedirectURIs []string
 	// LogLevel gates the one-line-per-request access log (method, path,
 	// status, duration, client_id where known). "silent" disables it;

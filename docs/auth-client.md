@@ -105,8 +105,16 @@ reads as broken authentication. Cursor surfaces it as
 `Server returned 403 after trying upscoping` — it tried to escalate and had
 nothing to escalate to.
 
-All three SDKs therefore derive the document from the verifier that guards the
-resource, so the advertised scopes cannot drift from the enforced ones.
+`scopes_supported` is the catalogue of scopes the resource offers (RFC 9728).
+`required_scopes` is the gate for calling the resource at all. The default is
+to advertise the gate, so a server with one scope cannot publish a different
+set by accident. Pass them separately when the catalogue is wider than the
+gate, which is what a per-tool scope check needs: an explicit `required_scopes`
+of `set()` is a real gate, not "use the catalogue".
+
+All three SDKs can still derive the document from the verifier that guards the
+resource. Python accepts an explicit `scopes_supported` on
+`protected_resource_metadata` and on `build_remote_auth`.
 
 **Go**
 
@@ -143,8 +151,13 @@ Mount it on both the bare well-known path and the path-suffixed form: clients
 build the URL from the resource identifier, so a resource at `/ping/mcp` is
 looked up at `/.well-known/oauth-protected-resource/ping/mcp`.
 
-On FastMCP, `build_remote_auth(..., scopes_supported=[...])` already serves the
-document; pass the same scopes the verifier enforces.
+On FastMCP, `build_remote_auth(..., scopes_supported=[...])` serves the
+document and, by default, enforces that same set. Pass `required_scopes` when
+the gate should be narrower. A token that is valid but missing the gate is
+HTTP 403 with `error="insufficient_scope"` and a `scope` parameter
+(`authorize_bearer` in Python, `RequireToken` in Go). FastMCP's own verifier
+is given an empty required-scope list so a partial token is not turned into a
+401 inside `verify_token`; the gate lives on the auth provider.
 
 ### Challenges
 

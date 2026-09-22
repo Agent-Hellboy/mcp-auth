@@ -14,6 +14,18 @@ class TokenVerificationError(ValueError):
     """Raised for any invalid inbound MCP access token."""
 
 
+class InsufficientScopeError(TokenVerificationError):
+    """The token is valid, but it does not carry every required scope.
+
+    The ``: scope`` suffix matches the Go verifier so an HTTP layer can answer
+    403 ``insufficient_scope`` instead of treating the token as broken.
+    """
+
+    def __init__(self, required_scopes: frozenset[str]) -> None:
+        self.required_scopes = required_scopes
+        super().__init__("JWT does not contain all required scopes: scope")
+
+
 @dataclass(frozen=True, slots=True)
 class TokenClaims:
     subject: str
@@ -82,7 +94,7 @@ class JWTVerifier:
             )
             scopes = frozenset(str(claims.get("scope", "")).split())
             if not self.required_scopes.issubset(scopes):
-                raise TokenVerificationError("JWT does not contain all required scopes")
+                raise InsufficientScopeError(self.required_scopes)
             audience = claims["aud"]
             if not isinstance(audience, (str, list)):
                 raise TokenVerificationError("JWT audience has an invalid type")

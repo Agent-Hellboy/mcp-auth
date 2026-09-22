@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 
 import jwt
 import pytest
@@ -7,12 +8,15 @@ from mcp_auth_client import (
     ExchangedToken,
     JWTVerifier,
     OAuthState,
+    RemoteAuthProvider,
     TokenExchangeError,
     TokenVerificationError,
+    authorize_bearer,
     unauthorized_headers,
 )
 from mcp_auth_client.cache import BoundedTokenCache
 from mcp_auth_client.challenge import parse_www_authenticate
+from mcp_auth_client.integration import scope_policy
 from mcp_auth_client.models import AuthorizationServerConfig
 
 
@@ -151,6 +155,68 @@ def test_state_nonce_and_pkce_validation() -> None:
             expected_issuer="https://auth.example.com",
             issuer_parameter_supported=True,
         )
+
+
+@pytest.mark.asyncio
+async def test_insufficient_scope_is_forbidden() -> None:
+    private, jwk = key_pair()
+    token = jwt.encode(
+        {
+            "iss": "https://auth.example.com",
+            "sub": "user",
+            "aud": "https://mcp.example.com",
+            "exp": time.time() + 300,
+            "scope": "catalog:read",
+        },
+        private,
+        algorithm="RS256",
+        headers={"kid": "test"},
+    )
+    verifier = JWTVerifier.from_jwks(
+        {"keys": [jwk]},
+        issuer="https://auth.example.com",
+        audience="https://mcp.example.com",
+        required_scopes={"catalog:read", "sql:read"},
+    )
+    metadata = "https://mcp.example.com/.well-known/oauth-protected-resource"
+    decision = await authorize_bearer(verifier, f"Bearer {token}", metadata)
+    assert decision.status == 403
+    header = decision.headers["WWW-Authenticate"]
+    assert 'error="insufficient_scope"' in header
+    assert 'scope="catalog:read sql:read"' in header
+
+    wide_catalogue, gate = ["catalog:read", "sql:read"], frozenset()
+    enforced, advertised = scope_policy(wide_catalogue, gate)
+    assert enforced == frozenset()
+    assert advertised == ["catalog:read", "sql:read"]
+    open_verifier = JWTVerifier.from_jwks(
+        {"keys": [jwk]},
+        issuer="https://auth.example.com",
+        audience="https://mcp.example.com",
+        required_scopes=enforced,
+    )
+    allowed = await authorize_bearer(open_verifier, f"Bearer {token}", metadata)
+    assert allowed.status == 200
+    provider = RemoteAuthProvider(
+        token_verifier=open_verifier,
+        authorization_servers=["https://auth.example.com"],
+        base_url="https://mcp.example.com",
+        scopes_supported=advertised,
+    )
+    plan = provider.fastmcp_construction()
+    assert plan["verifier_required_scopes"] == []
+    assert plan["provider_required_scopes"] == []
+    assert plan["scopes_supported"] == ["catalog:read", "sql:read"]
+
+
+def test_py_typed_marker_is_packaged() -> None:
+    root = Path(__file__).resolve().parents[1]
+    marker = root / "auth-client/python/src/mcp_auth_client/py.typed"
+    assert marker.is_file()
+    for project in (root / "pyproject.toml", root / "auth-client/python/pyproject.toml"):
+        text = project.read_text()
+        assert "py.typed" in text
+        assert 'mcp_auth_client = ["py.typed"]' in text
 
 
 def test_promoted_integration_helpers_are_public() -> None:

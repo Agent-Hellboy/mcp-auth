@@ -90,7 +90,10 @@ Important settings:
   `MCP_AUTH_RESOURCE`, by design — see [Serving multiple resources](#serving-multiple-resources) below for
   more than one. Any other connector in the file is inert, and is named in a startup warning so it can't be
   mistaken for live. Local identity/token exchange is available only when `MCP_AUTH_LOCAL_DEVELOPMENT=true`;
-  production starts only with a named connector.
+  production starts only with a named connector. While the fixed-subject identity provider or the local
+  token exchanger is in use, the process logs a warning at startup, again every minute, and on every
+  use. The loopback-issuer and memory-store guards still refuse to boot a non-loopback issuer or a
+  production memory store.
 - `MCP_AUTH_REGISTRATION_ENABLED`: disable open registration unless policy permits it. Defaults to
   `false`, but Cursor and Claude both perform dynamic client registration (`POST /register`) before
   their first connection, with no fallback to a pre-registered client. A real deployment serving
@@ -165,9 +168,57 @@ The configured RSA key signs RS256 access tokens. For key rotation, deploy a key
 
 Plaintext `http://` to any non-loopback host is rejected. Admitting private-use
 schemes broadly is safe because PKCE `S256` is mandatory and `/authorize`
-matches the registered `redirect_uri` exactly; a deployment that wants to
-restrict which clients may register sets the connector's
+matches a dynamically registered `redirect_uri` exactly. A deployment that
+wants to restrict which clients may register sets the connector's
 `allowed_client_redirect_uris`, which `/register` enforces when non-empty.
+
+That allowlist is not exact-string for loopback. An `http` entry on
+`127.0.0.1`, `localhost`, or `[::1]` matches scheme, hostname, and path, and
+ignores the port (RFC 8252 §7.3), so `http://127.0.0.1:39999/callback` allows
+`http://127.0.0.1:40000/callback` and does not allow `http://localhost:40000/callback`.
+`http://127.0.0.1:*`, `http://localhost:*`, and `http://[::1]:*` match any path
+on that host. `https` and private-use entries, including
+`com.example.app:/oauth/callback`, still match the whole string. A fragment or
+a relative URI is rejected both at registration and in the allowlist.
+
+```json
+"allowed_client_redirect_uris": [
+  "http://127.0.0.1:*",
+  "http://localhost:*",
+  "http://[::1]:*",
+  "https://claude.ai/api/mcp/auth_callback",
+  "https://www.cursor.com/agents/mcp/oauth/callback",
+  "claude://oauth/callback",
+  "cursor://anysphere.cursor-mcp/oauth/callback",
+  "com.example.app:/oauth/callback"
+]
+```
+
+A rejected registration is an audit event `client_registration` with `outcome`
+`failure`, `reason`, and `redirect_uri` when one was present. `/authorize` for
+an unknown `client_id` is `authorization_rejected` with `reason`
+`unregistered_client`. A redirect URI is not a credential, so it is logged.
+
+### Client ID Metadata Documents
+
+An MCP client may also identify itself with an HTTPS URL instead of calling
+`POST /register`. That is an OAuth Client ID Metadata Document
+(`draft-ietf-oauth-client-id-metadata-document-00`), which the 2026-07-28 MCP
+authorization spec says an authorization server should support. Dynamic client
+registration still works for clients that are not identified by a URL.
+
+On `/authorize` and `/token`, a `client_id` that is an HTTPS URL is fetched and
+checked: the document's `client_id` must equal that URL, every `redirect_uris`
+entry must be a redirect this server would register, and the request's
+`redirect_uri` must match one of them (loopback ports ignored, same as the
+allowlist). `token_endpoint_auth_method` must be `none` or omitted. The same
+`allowed_client_redirect_uris` list applies when it is set.
+
+The fetch is HTTPS only, does not follow redirects, times out after 5 seconds,
+and reads at most 1 MiB. URLs with userinfo or a fragment are rejected, as are
+non-loopback IP literals. A hostname is not resolved, so a name that points at
+a private address is not blocked. That is a real limit: the client chooses the
+URL.
 
 **A deliberate deviation from the MCP authorization spec.** That spec states
 that "all redirect URIs MUST be either localhost or use HTTPS". Read literally
@@ -234,10 +285,16 @@ A connector only needs `issuer` plus whichever of `authorization_endpoint`,
 specify by hand: at load time, if any of the first three is missing, the
 server fetches `{issuer}/.well-known/openid-configuration` (OpenID Connect
 Discovery 1.0) once and fills in whichever fields the connector left blank.
-A connector that already specifies all three never triggers this — it's
-purely additive, so every connector written before discovery existed keeps
-working unchanged. A load-time failure to reach the discovery document is a
-startup error, not a silent fallback.
+The request sends `Accept: application/json`. The document's `issuer` must
+match the issuer that was requested (OpenID Connect Discovery 1.0 §4.3); a
+single trailing slash on either side is ignored, and any other difference
+fails startup. A discovered `jwks_uri` may be on a different host than the
+issuer. That is legitimate for some providers, and it also means discovery
+can move key fetching to a host the connector file never named. A connector
+that already specifies all three endpoints never triggers this — it's purely
+additive, so every connector written before discovery existed keeps working
+unchanged. A load-time failure to reach the discovery document is a startup
+error, not a silent fallback.
 
 `identity_claims` is the ordered list of ID token claims tried, in order, as
 the local identity (`Identity.Subject`): defaults to `["sub"]`. Not every
@@ -285,9 +342,12 @@ internal service, whatever the connector fronts) is obtained:
   directly, and refreshed via `grant_type=refresh_token` when it expires. This
   works with any OAuth2/OIDC provider, since it never depends on the upstream
   supporting RFC 8693 token-exchange or trusting an mcp-auth-issued token as a
-  federated subject. Its limit: it can only return the credential the login
-  session already produced — it can't mint one for an audience/scope that
-  session wasn't already requested with.
+  federated subject. `audience`, `scope`, and `requested_token_type` on the
+  exchange request are advisory. They are not minted into a new
+  audience-scoped token. The response is still the credential the login
+  session already produced, and it includes
+  `issued_token_type` of `urn:ietf:params:oauth:token-type:access_token`
+  (RFC 8693 §2.2.1) because that is the shape of the token being returned.
 - `rfc8693`: performs RFC 8693 token-exchange against the connector's upstream
   provider, presenting this server's own access token as `subject_token`. Use
   this only against a provider that actually implements token-exchange (often
@@ -306,10 +366,11 @@ conflate because they're both "redirect URIs":
   registering with the connector's upstream provider. This guards the
   server's own registration, not an MCP client's redirect.
 - `allowed_client_redirect_uris`: which `redirect_uris` an MCP client (Cursor,
-  Claude Desktop, ...) may request through dynamic client registration, in
-  addition to the HTTPS-or-loopback check `POST /register` always applies.
-  Leave it empty for clients that use a loopback listener on an
-  unpredictable port, since an allowlist can only match exact values.
+  Claude Desktop, ...) may request through dynamic client registration or a
+  Client ID Metadata Document, in addition to the redirect check `POST /register`
+  always applies. Loopback `http` entries ignore the port;
+  `http://127.0.0.1:*`, `http://localhost:*`, and `http://[::1]:*` match any
+  path on that host. `https` and private-use entries match exactly.
 
 ## Verified identity providers
 
@@ -422,8 +483,14 @@ The store contains different classes of data:
   `downstream_token_strategy=upstream_session`; protect these as credentials.
 
 The local token exchanger exists only to make the development Compose flow
-self-contained. Production must inject a provider-backed `TokenExchanger` that
-validates the subject token and obtains a credential for the downstream audience.
+self-contained. It is not behind a build tag, because tests and the e2e flow
+call it, and every use logs that it is minting a stub credential. Production
+must inject a provider-backed `TokenExchanger` that validates the subject token
+and obtains a credential for the downstream audience. An exchanger error that
+is an upstream fault (network, HTTP 5xx, missing upstream session) is
+`server_error` with status 502 or 503 and an `error_description`. `invalid_target`
+is reserved for an audience the exchanger itself rejects. Both cases carry an
+audit `reason`.
 
 Do not use a Docker volume as the authoritative credential/state store for a multi-instance deployment. Volumes are node-local and create failover, backup, encryption, and access-control problems. A volume is acceptable only as a tightly controlled single-node development or explicitly managed single-node deployment choice. The enterprise default is a shared encrypted database for OAuth state and a secret manager/KMS/HSM for signing keys and confidential client credentials. Implement `Store` and `KeyProvider` adapters for the chosen services; the HTTP handlers do not change.
 
