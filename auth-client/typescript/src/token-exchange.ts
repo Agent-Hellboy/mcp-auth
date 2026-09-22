@@ -124,6 +124,10 @@ export class TokenExchangeClient {
     }
     const init: RequestInit = {
       method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: form,
+      // 307 and 308 replay the body, so a redirect from an https endpoint to an
+      // http one would resend the subject token and client assertion in
+      // cleartext and bypass the scheme check above.
+      redirect: "error",
     };
     const { signal: requestSignal, release } = requestTimeout(this.timeoutMs, signal);
     if (requestSignal) init.signal = requestSignal;

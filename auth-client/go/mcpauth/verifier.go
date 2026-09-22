@@ -81,8 +81,14 @@ func (v *JWTVerifier) VerifyContext(ctx context.Context, token string) (TokenCla
 	if !ok || !v.allowedAlgorithm(algorithm) {
 		return TokenClaims{}, fmt.Errorf("%w: algorithm", ErrInvalidToken)
 	}
-	if typ, ok := header["typ"].(string); ok && typ != "JWT" && typ != "at+jwt" {
-		return TokenClaims{}, fmt.Errorf("%w: typ", ErrInvalidToken)
+	// A present typ must be a string: a number, array, or object is not one of
+	// the allowed values, so type-asserting and ignoring the failure let it
+	// through unchecked.
+	if raw, present := header["typ"]; present {
+		typ, ok := raw.(string)
+		if !ok || (typ != "JWT" && typ != "at+jwt") {
+			return TokenClaims{}, fmt.Errorf("%w: typ", ErrInvalidToken)
+		}
 	}
 	kid, ok := header["kid"].(string)
 	if !ok || kid == "" {

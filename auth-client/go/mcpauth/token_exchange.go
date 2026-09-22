@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -46,6 +47,12 @@ type TokenExchangeClient struct {
 	AllowInsecure bool
 }
 
+var defaultExchangeClient = &http.Client{Timeout: 10 * time.Second, CheckRedirect: refuseRedirect}
+
+func refuseRedirect(*http.Request, []*http.Request) error {
+	return errors.New("token endpoint must not redirect")
+}
+
 func exchangeCacheKey(subjectToken, audience string, scopes []string) string {
 	sorted := append([]string(nil), scopes...)
 	sort.Strings(sorted)
@@ -79,9 +86,23 @@ func (c *TokenExchangeClient) Exchange(subjectToken, audience string, scopes []s
 	}
 	client := c.HTTPClient
 	if client == nil {
-		client = http.DefaultClient
+		client = defaultExchangeClient
 	}
-	response, err := client.Post(c.Endpoint, "application/x-www-form-urlencoded", bytes.NewBufferString(form.Encode()))
+	request, err := http.NewRequest(http.MethodPost, c.Endpoint, bytes.NewBufferString(form.Encode()))
+	if err != nil {
+		return CachedToken{}, err
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// 307 and 308 replay the body, so a redirect from an https endpoint to an
+	// http one would post the subject token and client assertion in cleartext.
+	// Refuse every redirect: a token endpoint has no reason to move. A caller
+	// that set its own policy keeps it.
+	if client.CheckRedirect == nil {
+		copied := *client
+		copied.CheckRedirect = refuseRedirect
+		client = &copied
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return CachedToken{}, err
 	}

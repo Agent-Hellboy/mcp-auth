@@ -258,3 +258,27 @@ func TestDiscoveryInsertsWellKnownPathAndValidatesIssuer(t *testing.T) {
 		t.Fatalf("discovery failed: %+v, %v", metadata, err)
 	}
 }
+
+// TestExchangeRefusesRedirect covers a 307 or 308 from the token endpoint.
+// http.Client replays the body on those codes, so following a redirect to an
+// http target would post the subject token and client assertion in cleartext.
+func TestExchangeRefusesRedirect(t *testing.T) {
+	var insecureHits int
+	insecure := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		insecureHits++
+		_, _ = w.Write([]byte(`{"access_token":"leaked","expires_in":300}`))
+	}))
+	defer insecure.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Redirect(w, &http.Request{}, insecure.URL, http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	client := &TokenExchangeClient{Endpoint: redirector.URL, AllowInsecure: true}
+	if _, err := client.Exchange("subject-token", "https://api.example.com", nil); err == nil {
+		t.Fatal("Exchange followed a redirect instead of refusing it")
+	}
+	if insecureHits != 0 {
+		t.Fatalf("redirect target received %d request(s); the body was replayed", insecureHits)
+	}
+}

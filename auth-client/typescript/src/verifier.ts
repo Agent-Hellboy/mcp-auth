@@ -135,6 +135,13 @@ export class JWTVerifier {
     return this.keys.size > 0 && Date.now() - this.loadedAt < this.jwksTtlMs;
   }
 
+  // throttled reports whether a refresh happened too recently to allow
+  // another. A cached key is still returned by signingKey when it holds one,
+  // so throttling never rejects a token the current document can verify.
+  private throttled(): boolean {
+    return this.lastRefresh > 0 && Date.now() - this.lastRefresh < this.jwksMinFetchMs;
+  }
+
   private recentMiss(kid: string): boolean {
     const missedAt = this.unknownKids.get(kid);
     if (missedAt === undefined) return false;
@@ -146,6 +153,10 @@ export class JWTVerifier {
     const cached = this.keys.get(kid);
     if (cached && this.fresh()) return cached;
     if (this.recentMiss(kid)) return undefined;
+    // The refresh interval is global, not per kid. Keying it on repeated
+    // misses of the same kid let an unauthenticated caller send a stream of
+    // unique kids and draw one JWKS request per token.
+    if (this.throttled()) return cached;
     // A kid that is absent from a populated cache needs its own fetch. Joining
     // an ordinary load that is already in flight would observe a document that
     // was requested before this kid was known.

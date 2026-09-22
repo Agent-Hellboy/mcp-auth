@@ -191,3 +191,33 @@ test("forced JWKS refresh is not satisfied by an older in-flight fetch", async (
   await pendingRotated;
   assert.equal(calls, 3);
 });
+
+test("unique unknown kids share the global JWKS refresh interval", async () => {
+  // Keying the interval on repeated misses of one kid let a caller send a
+  // stream of distinct kids and draw one JWKS request per token.
+  let calls = 0;
+  const client = new JWTVerifier({
+    jwksUri: `${issuer}/.well-known/jwks.json`, issuer, audience,
+    fetch: async () => {
+      calls++;
+      return new Response(JSON.stringify({ keys: [{ ...jwk, kid: "test-key", alg: "RS256" }] }));
+    },
+  });
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await assert.rejects(client.verify(jwt({}, { kid: `unique-${attempt}` })));
+  }
+  assert.equal(calls, 1);
+});
+
+test("exchange refuses redirects so a 307 cannot resend the body over http", async () => {
+  let seen: RequestInit | undefined;
+  const client = new TokenExchangeClient({
+    endpoint: `${issuer}/token`,
+    fetch: async (_input, init) => {
+      seen = init;
+      return new Response(JSON.stringify({ access_token: "downstream", expires_in: 300 }));
+    },
+  });
+  await client.exchange("subject-token", "https://api.example.com");
+  assert.equal(seen?.redirect, "error");
+});

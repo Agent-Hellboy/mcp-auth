@@ -82,7 +82,10 @@ class JWTVerifier:
             typ = header.get("typ")
             if not isinstance(algorithm, str) or algorithm not in self.algorithms:
                 raise TokenVerificationError("JWT algorithm is not allowlisted")
-            if isinstance(typ, str) and typ not in {"JWT", "at+jwt"}:
+            # A present typ must be a string. Guarding on isinstance let a
+            # number, list, or object through unchecked, because none of them
+            # is one of the two allowed values.
+            if typ is not None and (not isinstance(typ, str) or typ not in {"JWT", "at+jwt"}):
                 raise TokenVerificationError("JWT type is not allowed")
             if not isinstance(kid, str):
                 raise TokenVerificationError("JWT kid is missing")
