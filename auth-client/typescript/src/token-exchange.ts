@@ -3,8 +3,15 @@ import { createHash, randomUUID, sign } from "node:crypto";
 const EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
 const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
 const ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+const DEFAULT_CACHE_ENTRIES = 128;
+const DEFAULT_EXPIRY_MARGIN_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 10_000;
 
 function encode(value: object): string { return Buffer.from(JSON.stringify(value)).toString("base64url"); }
+
+function exchangeCacheKey(subjectToken: string, audience: string, scopes: readonly string[]): string {
+  return createHash("sha256").update(`${subjectToken}\0${audience}\0${scopes.join(" ")}`).digest("hex");
+}
 
 export class PrivateKeyJWTClientAuth {
   constructor(
@@ -31,25 +38,80 @@ export interface ExchangedToken {
   scopes: ReadonlySet<string>;
 }
 
+export class TokenExchangeCache {
+  private readonly values = new Map<string, ExchangedToken>();
+
+  constructor(
+    readonly maxEntries = DEFAULT_CACHE_ENTRIES,
+    private readonly expiryMarginMs = DEFAULT_EXPIRY_MARGIN_MS,
+  ) {
+    if (maxEntries < 1) throw new Error("maxEntries must be positive");
+    if (expiryMarginMs < 0) throw new Error("expiryMarginMs must be non-negative");
+  }
+
+  get size(): number { return this.values.size; }
+
+  get(key: string, now = Date.now()): ExchangedToken | undefined {
+    const value = this.values.get(key);
+    if (!value) return undefined;
+    if (value.expiresAt <= now + this.expiryMarginMs) {
+      this.values.delete(key);
+      return undefined;
+    }
+    this.values.delete(key);
+    this.values.set(key, value);
+    return value;
+  }
+
+  set(key: string, value: ExchangedToken): void {
+    if (this.values.has(key)) this.values.delete(key);
+    this.values.set(key, value);
+    while (this.values.size > this.maxEntries) {
+      const oldest = this.values.keys().next().value;
+      if (oldest !== undefined) this.values.delete(oldest);
+    }
+  }
+}
+
 export interface TokenExchangeClientOptions {
   endpoint: string;
   clientAuth?: PrivateKeyJWTClientAuth;
   fetch?: typeof globalThis.fetch;
+  allowInsecure?: boolean;
+  timeoutMs?: number;
+  cache?: TokenExchangeCache;
 }
 
 export class TokenExchangeClient {
   private readonly fetcher: typeof globalThis.fetch;
-  private readonly cache = new Map<string, ExchangedToken>();
+  private readonly cache: TokenExchangeCache;
+  private readonly timeoutMs: number;
+
   constructor(private readonly options: TokenExchangeClientOptions) {
-    new URL(options.endpoint);
+    let url: URL;
+    try {
+      url = new URL(options.endpoint);
+    } catch {
+      throw new Error("token endpoint must be an absolute URL");
+    }
+    if (url.protocol !== "https:" && options.allowInsecure !== true) {
+      throw new Error("token endpoint must use https");
+    }
     this.fetcher = options.fetch ?? globalThis.fetch;
+    this.cache = options.cache ?? new TokenExchangeCache();
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
-  async exchange(subjectToken: string, audience: string, scopes: Iterable<string> = []): Promise<ExchangedToken> {
+  async exchange(
+    subjectToken: string,
+    audience: string,
+    scopes: Iterable<string> = [],
+    signal?: AbortSignal,
+  ): Promise<ExchangedToken> {
     const sortedScopes = [...scopes].sort();
-    const key = `${createHash("sha256").update(subjectToken).digest("base64url")}|${audience}|${sortedScopes.join(" ")}`;
+    const key = exchangeCacheKey(subjectToken, audience, sortedScopes);
     const cached = this.cache.get(key);
-    if (cached && cached.expiresAt > Date.now() + 30_000) return cached;
+    if (cached) return cached;
     const form = new URLSearchParams({
       grant_type: EXCHANGE_GRANT, subject_token: subjectToken, subject_token_type: ACCESS_TOKEN_TYPE,
       requested_token_type: ACCESS_TOKEN_TYPE, audience, scope: sortedScopes.join(" "),
@@ -59,9 +121,12 @@ export class TokenExchangeClient {
       form.set("client_assertion_type", ASSERTION_TYPE);
       form.set("client_assertion", this.options.clientAuth.assertion(this.options.endpoint));
     }
-    const response = await this.fetcher(this.options.endpoint, {
+    const init: RequestInit = {
       method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: form,
-    });
+    };
+    const requestSignal = this.signalFor(signal);
+    if (requestSignal) init.signal = requestSignal;
+    const response = await this.fetcher(this.options.endpoint, init);
     if (!response.ok) throw new Error(`token exchange returned HTTP ${response.status}`);
     const data = await response.json() as Record<string, unknown>;
     if (typeof data.access_token !== "string") throw new Error("token exchange response has no access_token");
@@ -75,5 +140,12 @@ export class TokenExchangeClient {
     };
     this.cache.set(key, token);
     return token;
+  }
+
+  private signalFor(signal?: AbortSignal): AbortSignal | undefined {
+    if (this.timeoutMs <= 0) return signal;
+    const timeout = AbortSignal.timeout(this.timeoutMs);
+    if (!signal) return timeout;
+    return AbortSignal.any([signal, timeout]);
   }
 }

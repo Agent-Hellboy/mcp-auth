@@ -216,6 +216,7 @@ class _ResourceHandler(BaseHTTPRequestHandler):
                     "resource-server",
                     self.exchange_private_key_pem,
                     "resource-key",
+                    allow_insecure=True,
                 )
                 try:
                     return (

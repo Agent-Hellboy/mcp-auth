@@ -10,37 +10,38 @@ permissions:
 
 jobs:
   go:
-    name: Go ${{ matrix.component }}
+    name: Go ${{ matrix.component.name }} ${{ matrix.go-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - component: auth-server
+        go-version: ["1.26", "1.27"]
+        component:
+          - name: auth-server
             path: auth-server
-          - component: auth-client
+          - name: auth-client
             path: auth-client/go
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          go-version: ${{ matrix.go-version }}
           cache: false
       - name: Check formatting
-        working-directory: ${{ matrix.path }}
+        working-directory: ${{ matrix.component.path }}
         run: test -z "$(gofmt -l .)"
       - name: Test
-        working-directory: ${{ matrix.path }}
+        working-directory: ${{ matrix.component.path }}
         run: GOWORK=off go test ./...
       - name: Vet
-        working-directory: ${{ matrix.path }}
+        working-directory: ${{ matrix.component.path }}
         run: GOWORK=off go vet ./...
       - name: Vulnerability scan
         uses: golang/govulncheck-action@v1
         with:
-          go-version-input: "1.26"
+          go-version-input: ${{ matrix.go-version }}
           go-package: ./...
-          work-dir: ${{ matrix.path }}
+          work-dir: ${{ matrix.component.path }}
           cache: false
 
   python:
@@ -49,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -68,13 +69,17 @@ jobs:
       - run: uv build --project auth-client/python
 
   typescript:
-    name: TypeScript SDK and example
+    name: TypeScript SDK Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22", "24", "26"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: ${{ matrix.node-version }}
           cache: npm
           cache-dependency-path: |
             auth-client/typescript/package-lock.json
@@ -85,11 +90,14 @@ jobs:
         working-directory: auth-client/typescript
       - run: npm audit --audit-level=high
         working-directory: auth-client/typescript
-      - run: npm ci
+      - if: matrix.node-version == '24'
+        run: npm ci
         working-directory: examples/typescript-mcp
-      - run: npm run typecheck
+      - if: matrix.node-version == '24'
+        run: npm run typecheck
         working-directory: examples/typescript-mcp
-      - run: npm audit --audit-level=high
+      - if: matrix.node-version == '24'
+        run: npm audit --audit-level=high
         working-directory: examples/typescript-mcp
 
   e2e:

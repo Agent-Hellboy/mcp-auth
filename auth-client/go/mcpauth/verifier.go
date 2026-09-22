@@ -235,7 +235,14 @@ func (v *JWTVerifier) ensureKeys(ctx context.Context, kid, algorithm string) (*r
 	var raw struct {
 		Keys []map[string]string `json:"keys"`
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, maxJWKSBody)).Decode(&raw); err != nil {
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxJWKSBody+1))
+	if err != nil {
+		return nil, fmt.Errorf("%w: JWKS read", ErrInvalidToken)
+	}
+	if len(body) > maxJWKSBody {
+		return nil, fmt.Errorf("%w: JWKS too large", ErrInvalidToken)
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("%w: JWKS JSON", ErrInvalidToken)
 	}
 	keys := map[string]*rsa.PublicKey{}

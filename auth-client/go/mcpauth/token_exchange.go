@@ -7,10 +7,12 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -39,10 +41,27 @@ type TokenExchangeClient struct {
 	HTTPClient *http.Client
 	ClientAuth *PrivateKeyJWTClientAuth
 	Cache      *TokenCache
+	// AllowInsecure permits a non-https token endpoint. Leave it false so
+	// subject tokens and client assertions are not posted over cleartext.
+	AllowInsecure bool
+}
+
+func exchangeCacheKey(subjectToken, audience string, scopes []string) string {
+	sorted := append([]string(nil), scopes...)
+	sort.Strings(sorted)
+	sum := sha256.Sum256([]byte(subjectToken + "\x00" + audience + "\x00" + strings.Join(sorted, " ")))
+	return hex.EncodeToString(sum[:])
 }
 
 func (c *TokenExchangeClient) Exchange(subjectToken, audience string, scopes []string) (CachedToken, error) {
-	key := subjectToken + "\x00" + audience + "\x00" + strings.Join(scopes, " ")
+	parsed, err := url.Parse(c.Endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return CachedToken{}, fmt.Errorf("token endpoint must be an absolute URL")
+	}
+	if parsed.Scheme != "https" && !c.AllowInsecure {
+		return CachedToken{}, fmt.Errorf("token endpoint must use https")
+	}
+	key := exchangeCacheKey(subjectToken, audience, scopes)
 	if c.Cache != nil {
 		if token, ok := c.Cache.Get(key); ok {
 			return token, nil

@@ -1,3 +1,4 @@
+import hashlib
 import secrets
 import time
 from dataclasses import dataclass
@@ -70,6 +71,15 @@ class PrivateKeyJWTClientAuth:
         }
 
 
+def _exchange_cache_key(
+    subject_token: str, audience: str, scopes: set[str] | frozenset[str]
+) -> str:
+    """Hash the subject token with audience and scopes so the raw token is not a map key."""
+
+    material = "\0".join((subject_token, audience, " ".join(sorted(scopes))))
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
 class TokenExchangeClient:
     def __init__(
         self,
@@ -77,12 +87,17 @@ class TokenExchangeClient:
         client_auth: PrivateKeyJWTClientAuth | None = None,
         http_client: httpx.AsyncClient | None = None,
         cache: BoundedTokenCache | None = None,
+        allow_insecure: bool = False,
     ) -> None:
-        if urlparse(token_endpoint).scheme not in {"https", "http"}:
-            raise ValueError("token endpoint must be an absolute URL")
+        parsed = urlparse(token_endpoint)
+        if parsed.scheme not in {"https", "http"} or not parsed.hostname:
+            raise ValueError("token endpoint must be an absolute HTTP(S) URL")
+        if parsed.scheme != "https" and not allow_insecure:
+            raise ValueError("token endpoint must use https")
         self.token_endpoint, self.client_auth = token_endpoint, client_auth
         self._http_client, self._owns_client = http_client, http_client is None
         self.cache = cache or BoundedTokenCache()
+        self.allow_insecure = allow_insecure
 
     async def __aenter__(self) -> "TokenExchangeClient":
         if self._http_client is None:
@@ -100,7 +115,7 @@ class TokenExchangeClient:
         scopes: set[str] | frozenset[str] = frozenset(),
         use_cache: bool = True,
     ) -> TokenSet:
-        key = f"{hash(subject_token)}|{audience}|{' '.join(sorted(scopes))}"
+        key = _exchange_cache_key(subject_token, audience, scopes)
         if use_cache:
             cached = self.cache.get(key)
             if isinstance(cached, TokenSet):

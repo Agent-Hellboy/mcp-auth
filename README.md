@@ -7,7 +7,7 @@
 [![Dependency audit](https://img.shields.io/badge/dependencies-audited-2EA44F)](.github/workflows/ci.yml)
 [![Official SDKs: Python, Go, TypeScript](https://img.shields.io/badge/official%20SDKs-Python%20%7C%20Go%20%7C%20TypeScript-5865F2)](docs/auth-client.md)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](auth-server/go.mod)
-[![Python](https://img.shields.io/badge/Python-3.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![Python](https://img.shields.io/badge/Python-3.12%20%7C%203.13%20%7C%203.14-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](auth-client/typescript/package.json)
 [![MCP authorization](https://img.shields.io/badge/MCP-authorization-7C3AED)](docs/architecture.md)
 [![GitHub release](https://img.shields.io/github/v/release/Agent-Hellboy/mcp-auth?display_name=tag)](https://github.com/Agent-Hellboy/mcp-auth/releases)
