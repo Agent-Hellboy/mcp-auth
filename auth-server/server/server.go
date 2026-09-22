@@ -97,6 +97,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /authorize", s.authorize)
 	mux.HandleFunc("GET /identity/callback", s.identityCallback)
+	// A deployment reusing a redirect URI its provider already accepts serves
+	// the callback wherever that URI points. The default path stays mounted so
+	// an existing deployment is unaffected.
+	if callbackPath := s.Config.IdentityCallbackPath(); callbackPath != "/identity/callback" {
+		mux.HandleFunc("GET "+callbackPath, s.identityCallback)
+	}
 	mux.HandleFunc("POST /authorize/consent", s.consent)
 	mux.HandleFunc("POST /token", s.token)
 	mux.HandleFunc("POST /register", s.register)

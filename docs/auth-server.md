@@ -100,6 +100,10 @@ Important settings:
   either of them must set this to `true`, or the first connection attempt fails with no obvious
   cause pointing back to this setting. Combine it with `AllowedClientRedirectURIs` (below) rather
   than leaving registration fully open if the deployment can enumerate its expected clients.
+- `MCP_AUTH_IDENTITY_CALLBACK_URL`: the redirect URI registered with the identity provider. Empty
+  derives it as `<MCP_AUTH_ISSUER>/identity/callback`. Set it to reuse a URI the provider already
+  accepts; the callback is then served at that path too, so your ingress has to route it here. See
+  [The redirect URI you register with your identity provider](#the-redirect-uri-you-register-with-your-identity-provider).
 - `MCP_AUTH_CLIENT_ID_METADATA_ENABLED`: accept an https URL as a `client_id` and fetch the OAuth
   Client ID Metadata Document it names. Defaults to `false`, because the fetch target is chosen by
   an unauthenticated caller. While it is off, a URL `client_id` is reported as an unknown client.
@@ -125,6 +129,66 @@ Important settings:
   to support, so a client can't switch algorithms without re-registering its key.
 
 The Dockerfile builds a static, non-root image. Put TLS termination in a trusted reverse proxy or serve the endpoints through an HTTPS gateway.
+
+## The redirect URI you register with your identity provider
+
+Before a single login works, your identity provider has to know where to send
+the browser back to. That value is the one piece of configuration that lives
+outside this server, so get it right first.
+
+**By default the URI is your issuer plus `/identity/callback`:**
+
+| `MCP_AUTH_ISSUER` | Register this redirect URI |
+| --- | --- |
+| `https://auth.example.com` | `https://auth.example.com/identity/callback` |
+| `https://mcp.example.com/auth` | `https://mcp.example.com/auth/identity/callback` |
+| `http://127.0.0.1:8080` (local dev) | `http://127.0.0.1:8080/identity/callback` |
+
+It is a redirect URI for **this server**, not for the MCP client and not for
+the MCP resource server. Clients never see it. Most providers match it exactly,
+including the trailing path and the scheme, so copy it rather than retyping it.
+
+### When you cannot add a redirect URI
+
+Often that URI is not yours to choose. The OAuth app already exists with a
+fixed redirect URI, another team administers the provider, or change control
+makes adding one slow. `MCP_AUTH_IDENTITY_CALLBACK_URL` points this server at a
+URI the provider **already accepts**, so you can adopt mcp-auth without
+touching the provider:
+
+```bash
+MCP_AUTH_ISSUER=https://mcp.example.com/auth
+MCP_AUTH_IDENTITY_CALLBACK_URL=https://mcp.example.com/legacy/oauth/callback
+```
+
+The callback handler is then served at the override's path as well as the
+default one, so the redirect lands on this server either way. Two consequences
+to plan for:
+
+- **Your ingress must route that path here.** If the override is
+  `https://mcp.example.com/legacy/oauth/callback`, then `/legacy/oauth/callback`
+  has to reach this container, not whatever else sits under that prefix. Pick a
+  path that does not collide with another service's route.
+- **It must name a path.** A bare origin is rejected at startup, because there
+  would be nothing to route.
+
+The value is validated when the process starts: absolute URL, no fragment, and
+HTTPS unless `MCP_AUTH_REQUIRE_HTTPS=false`. A bad value fails the boot rather
+than the first login.
+
+### Checking it
+
+The redirect URI this server will actually send is derived from the same
+config the handler is mounted from, so an approved consent redirects straight
+to the provider with it in the query string:
+
+```bash
+curl -si "$ISSUER/authorize?client_id=...&response_type=code&..." | grep -i location
+# ...&redirect_uri=https%3A%2F%2Fmcp.example.com%2Flegacy%2Foauth%2Fcallback&...
+```
+
+If the provider answers with `invalid_redirect_uri` or an "unregistered
+redirect" error, that string and the one registered with the provider differ.
 
 ## Metadata and keys
 

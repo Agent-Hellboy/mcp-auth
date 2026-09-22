@@ -23,6 +23,9 @@ type Config struct {
 	TrustedOrigins       []string
 	PrivateKeyFile       string
 	RegistrationEnabled  bool
+	// IdentityCallback overrides the redirect URI this server registers with
+	// the upstream provider. Empty derives it from the issuer.
+	IdentityCallback string
 	// ClientIDMetadataEnabled turns on OAuth Client ID Metadata Documents.
 	// Off by default: a URL client_id makes this server issue an outbound GET
 	// to an address an unauthenticated caller chose, so an operator opts in
@@ -103,6 +106,18 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	if c.IdentityCallback != "" {
+		callback, err := url.Parse(c.IdentityCallback)
+		if err != nil || callback.Scheme == "" || callback.Host == "" || callback.Fragment != "" {
+			return errors.New("MCP_AUTH_IDENTITY_CALLBACK_URL must be an absolute URL with no fragment")
+		}
+		if c.RequireHTTPS && callback.Scheme != "https" {
+			return errors.New("MCP_AUTH_IDENTITY_CALLBACK_URL must use HTTPS when MCP_AUTH_REQUIRE_HTTPS is enabled")
+		}
+		if callback.Path == "" || callback.Path == "/" {
+			return errors.New("MCP_AUTH_IDENTITY_CALLBACK_URL must name a path, so the callback can be routed to this server")
+		}
+	}
 	if c.AllowInsecureConnectors && c.RequireHTTPS {
 		return errors.New("insecure connector transport requires MCP_AUTH_REQUIRE_HTTPS=false")
 	}
@@ -177,7 +192,34 @@ func (c Config) TokenEndpoint() string         { return c.issuerBase() + "/token
 func (c Config) RegistrationEndpoint() string  { return c.issuerBase() + "/register" }
 func (c Config) RevocationEndpoint() string    { return c.issuerBase() + "/revoke" }
 func (c Config) JWKSURI() string               { return c.issuerBase() + "/.well-known/jwks.json" }
-func (c Config) IdentityCallbackURL() string   { return c.issuerBase() + "/identity/callback" }
+
+// IdentityCallbackURL is the redirect URI this server hands the upstream
+// provider, and therefore the one an operator has to register with it.
+//
+// It defaults to <issuer>/identity/callback. The override exists because that
+// URI is frequently not ours to choose: an OAuth app may already exist with a
+// fixed redirect URI, the provider may be administered by another team, or
+// change control may make adding one slow. Pointing this at a URI the provider
+// already accepts lets a deployment adopt mcp-auth without touching the
+// provider at all. IdentityCallbackPath then serves the callback at whatever
+// path the override names, so the redirect still lands on this server.
+func (c Config) IdentityCallbackURL() string {
+	if c.IdentityCallback != "" {
+		return strings.TrimRight(c.IdentityCallback, "/")
+	}
+	return c.issuerBase() + "/identity/callback"
+}
+
+// IdentityCallbackPath is the path the callback handler is mounted at, taken
+// from IdentityCallbackURL so an override is reachable rather than merely
+// advertised.
+func (c Config) IdentityCallbackPath() string {
+	parsed, err := url.Parse(c.IdentityCallbackURL())
+	if err != nil || parsed.Path == "" || parsed.Path == "/" {
+		return "/identity/callback"
+	}
+	return parsed.Path
+}
 
 // ConsentEndpoint is where the consent form posts. It has to come from the
 // issuer like the rest: a root-relative form action resolves against the
@@ -198,6 +240,7 @@ func ConfigFromEnv() Config {
 		TrustedOrigins:              csvEnv("MCP_AUTH_TRUSTED_ORIGINS", nil),
 		PrivateKeyFile:              os.Getenv("MCP_AUTH_PRIVATE_KEY_FILE"),
 		RegistrationEnabled:         boolEnv("MCP_AUTH_REGISTRATION_ENABLED", false),
+		IdentityCallback:            strings.TrimSpace(os.Getenv("MCP_AUTH_IDENTITY_CALLBACK_URL")),
 		ClientIDMetadataEnabled:     boolEnv("MCP_AUTH_CLIENT_ID_METADATA_ENABLED", false),
 		ClientIDMetadataHosts:       csvEnv("MCP_AUTH_CLIENT_ID_METADATA_HOSTS", nil),
 		LocalDevelopment:            boolEnv("MCP_AUTH_LOCAL_DEVELOPMENT", false),
