@@ -14,15 +14,23 @@ type Config struct {
 	Issuer    string
 	Resources []string
 	// Resource is retained for source compatibility; use Resources for new code.
-	Resource                    string
-	ListenAddr                  string
-	AccessTokenTTL              time.Duration
-	RefreshTokenTTL             time.Duration
-	AuthorizationCodeTTL        time.Duration
-	AllowedScopes               []string
-	TrustedOrigins              []string
-	PrivateKeyFile              string
-	RegistrationEnabled         bool
+	Resource             string
+	ListenAddr           string
+	AccessTokenTTL       time.Duration
+	RefreshTokenTTL      time.Duration
+	AuthorizationCodeTTL time.Duration
+	AllowedScopes        []string
+	TrustedOrigins       []string
+	PrivateKeyFile       string
+	RegistrationEnabled  bool
+	// ClientIDMetadataEnabled turns on OAuth Client ID Metadata Documents.
+	// Off by default: a URL client_id makes this server issue an outbound GET
+	// to an address an unauthenticated caller chose, so an operator opts in
+	// the same way they opt in to dynamic registration.
+	ClientIDMetadataEnabled bool
+	// ClientIDMetadataHosts optionally restricts which hosts a client_id
+	// metadata document may be fetched from. Empty means any public host.
+	ClientIDMetadataHosts       []string
 	LocalDevelopment            bool
 	LocalSubject                string
 	LocalClientID               string
@@ -42,10 +50,12 @@ type Config struct {
 	DatabaseURL             string
 	ResourceClientsFile     string
 	// AllowedClientRedirectURIs restricts dynamic client registration
-	// (POST /register) to these exact redirect_uris when non-empty, in
-	// addition to validRedirect's scheme/host checks. It is populated from
-	// the selected connector's allowed_client_redirect_uris, not set directly
-	// from an environment variable.
+	// (POST /register) when non-empty, in addition to validRedirect.
+	// http loopback entries match scheme, hostname, and path and ignore the
+	// port. http://127.0.0.1:*, http://localhost:*, and http://[::1]:* match
+	// any path on that host. https and private-use entries match exactly.
+	// It is populated from the selected connector's
+	// allowed_client_redirect_uris, not set directly from an environment variable.
 	AllowedClientRedirectURIs []string
 	// LogLevel gates the one-line-per-request access log (method, path,
 	// status, duration, client_id where known). "silent" disables it;
@@ -188,6 +198,8 @@ func ConfigFromEnv() Config {
 		TrustedOrigins:              csvEnv("MCP_AUTH_TRUSTED_ORIGINS", nil),
 		PrivateKeyFile:              os.Getenv("MCP_AUTH_PRIVATE_KEY_FILE"),
 		RegistrationEnabled:         boolEnv("MCP_AUTH_REGISTRATION_ENABLED", false),
+		ClientIDMetadataEnabled:     boolEnv("MCP_AUTH_CLIENT_ID_METADATA_ENABLED", false),
+		ClientIDMetadataHosts:       csvEnv("MCP_AUTH_CLIENT_ID_METADATA_HOSTS", nil),
 		LocalDevelopment:            boolEnv("MCP_AUTH_LOCAL_DEVELOPMENT", false),
 		LocalSubject:                env("MCP_AUTH_LOCAL_SUBJECT", "local-user"),
 		LocalClientID:               os.Getenv("MCP_AUTH_LOCAL_CLIENT_ID"),

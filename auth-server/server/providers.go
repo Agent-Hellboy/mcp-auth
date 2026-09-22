@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 )
 
@@ -31,6 +32,7 @@ type Identity struct {
 type LocalIdentityProvider struct{ Subject string }
 
 func (p LocalIdentityProvider) Authenticate(_ context.Context, _ IdentityRequest) (Identity, error) {
+	slog.Warn("INSECURE LOCAL DEVELOPMENT identity provider is active: authenticating a fixed subject with no upstream login", "subject", p.Subject)
 	return Identity{Subject: p.Subject}, nil
 }
 
@@ -69,6 +71,7 @@ type LocalTokenExchanger struct {
 }
 
 func (e LocalTokenExchanger) Exchange(ctx context.Context, request ExchangeRequest) (ExchangeResponse, error) {
+	slog.Warn("INSECURE LOCAL DEVELOPMENT token exchanger is active: minting a stub downstream credential with no upstream provider", "audience", request.Audience)
 	if request.SubjectToken == "" || request.Audience == "" {
 		return ExchangeResponse{}, errors.New("subject token and audience are required")
 	}

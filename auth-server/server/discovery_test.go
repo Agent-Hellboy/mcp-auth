@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,13 +13,19 @@ import (
 
 func TestLoadConnectorsFillsMissingEndpointsViaDiscovery(t *testing.T) {
 	var discoveryRequests int
+	var accept string
+	var issuer string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/.well-known/openid-configuration" {
 			http.NotFound(w, r)
 			return
 		}
 		discoveryRequests++
+		accept = r.Header.Get("Accept")
+		// jwks_uri is on a different host than the issuer on purpose: some
+		// providers publish keys that way, and discovery must still accept it.
 		_ = json.NewEncoder(w).Encode(map[string]string{
+			"issuer":                 issuer,
 			"authorization_endpoint": "http://discovered.example.com/authorize",
 			"token_endpoint":         "http://discovered.example.com/token",
 			"jwks_uri":               "http://discovered.example.com/jwks",
@@ -26,6 +33,7 @@ func TestLoadConnectorsFillsMissingEndpointsViaDiscovery(t *testing.T) {
 		})
 	}))
 	defer server.Close()
+	issuer = server.URL
 
 	path := filepath.Join(t.TempDir(), "connectors.json")
 	body := fmt.Sprintf(`{"provider":{"issuer":%q,"client_id":"client","exchange_client_id":"exchange","token_endpoint_auth_method":"none","mcp_scopes":["tools:read"]}}`, server.URL)
@@ -46,6 +54,9 @@ func TestLoadConnectorsFillsMissingEndpointsViaDiscovery(t *testing.T) {
 	}
 	if discoveryRequests != 1 {
 		t.Fatalf("expected exactly one discovery request, got %d", discoveryRequests)
+	}
+	if accept != "application/json" {
+		t.Fatalf("discovery request Accept = %q, want application/json", accept)
 	}
 }
 
@@ -73,6 +84,47 @@ func TestLoadConnectorsSkipsDiscoveryWhenFullySpecified(t *testing.T) {
 	}
 	if connectors["provider"].AuthorizationEndpoint != "http://idp.example.com/authorize" {
 		t.Fatalf("unexpected connector: %+v", connectors["provider"])
+	}
+}
+
+func TestDiscoverOIDCConfigurationChecksIssuer(t *testing.T) {
+	var issuer string
+	var accept string
+	accepted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		accept = r.Header.Get("Accept")
+		// A trailing slash still matches. jwks_uri is on another host, which
+		// is legitimate for some providers and must not be rejected.
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"issuer":                 issuer + "/",
+			"authorization_endpoint": "https://idp.example.com/authorize",
+			"token_endpoint":         "https://idp.example.com/token",
+			"jwks_uri":               "https://keys.example.com/jwks",
+		})
+	}))
+	defer accepted.Close()
+	issuer = accepted.URL
+	discovered, err := discoverOIDCConfiguration(context.Background(), accepted.Client(), issuer)
+	if err != nil {
+		t.Fatalf("matching issuer: %v", err)
+	}
+	if discovered.JWKSURI != "https://keys.example.com/jwks" {
+		t.Fatalf("jwks_uri on another host was dropped: %+v", discovered)
+	}
+	if accept != "application/json" {
+		t.Fatalf("Accept = %q, want application/json", accept)
+	}
+
+	rejected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"issuer":                 "https://evil.example.com",
+			"authorization_endpoint": "https://idp.example.com/authorize",
+			"token_endpoint":         "https://idp.example.com/token",
+			"jwks_uri":               "https://idp.example.com/jwks",
+		})
+	}))
+	defer rejected.Close()
+	if _, err := discoverOIDCConfiguration(context.Background(), rejected.Client(), rejected.URL); err == nil {
+		t.Fatal("expected an issuer mismatch to be rejected")
 	}
 }
 

@@ -88,7 +88,7 @@ expiry, subject, and required scopes before dispatching an MCP tool. Authorizati
 is optional in MCP itself; each resource server decides whether its data or actions
 require it.
 
-Compatibility follows the shared authorization flow in the [2025-06-18 MCP authorization specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization) and the [2026-07-28 specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization). Newer issuer-response validation is additive, so deployments can support clients from either version.
+Compatibility follows the shared authorization flow in the [2025-06-18 MCP authorization specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization) and the [2026-07-28 specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization). Newer issuer-response validation is additive, so deployments can support clients from either version. The 2026-07-28 client-registration change is also implemented: an HTTPS URL `client_id` is fetched as an OAuth Client ID Metadata Document, and dynamic client registration remains for clients that do not use one. See [Client ID Metadata Documents](auth-server.md#client-id-metadata-documents).
 
 ## Token boundaries
 
@@ -100,7 +100,7 @@ There are three different credentials:
 | Resource-server service credential | A downstream authorization server/API | Server-to-server authentication |
 | Downstream API token | The downstream API audience | Requests to that downstream API only |
 
-The resource server must never forward the MCP client token to an API with a different audience. Use RFC 8693 token exchange or another provider adapter to mint a separate downstream token.
+The resource server must never forward the MCP client token to an API with a different audience. Use RFC 8693 token exchange or another provider adapter to mint a separate downstream token. Under the default `upstream_session` strategy the exchange response includes `issued_token_type`, and `audience`, `scope`, and `requested_token_type` are advisory: the credential is the one captured at login, not a newly minted audience-scoped token.
 
 ```mermaid
 flowchart LR

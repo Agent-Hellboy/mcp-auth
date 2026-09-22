@@ -8,9 +8,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -216,5 +219,38 @@ func TestValidIssuedAtAndNotBefore(t *testing.T) {
 	}
 	if validNotBefore(float64(time.Now().Add(10 * time.Minute).Unix())) {
 		t.Fatal("expected an nbf far in the future to be rejected")
+	}
+}
+
+// TestUpstreamExchangeErrorClassifiesInvalidTarget covers the real
+// OIDCTokenExchanger path. The non-2xx branch used to discard the OAuth error
+// body, so an upstream invalid_target - an unacceptable audience, which is a
+// 400 - was reported to the resource server as a 502 server_error.
+func TestUpstreamExchangeErrorClassifiesInvalidTarget(t *testing.T) {
+	cases := []struct {
+		name             string
+		status           int
+		body             string
+		wantUnacceptable bool
+	}{
+		{"invalid target", http.StatusBadRequest, `{"error":"invalid_target"}`, true},
+		{"invalid grant", http.StatusBadRequest, `{"error":"invalid_grant"}`, false},
+		{"upstream outage", http.StatusBadGateway, `upstream is down`, false},
+		{"empty body", http.StatusInternalServerError, ``, false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			response := &http.Response{
+				StatusCode: testCase.status,
+				Body:       io.NopCloser(strings.NewReader(testCase.body)),
+			}
+			err := upstreamExchangeError(response)
+			if err == nil {
+				t.Fatal("upstreamExchangeError returned nil for a non-2xx response")
+			}
+			if got := errors.Is(err, ErrUnacceptableAudience); got != testCase.wantUnacceptable {
+				t.Fatalf("errors.Is(err, ErrUnacceptableAudience) = %v, want %v (err: %v)", got, testCase.wantUnacceptable, err)
+			}
+		})
 	}
 }

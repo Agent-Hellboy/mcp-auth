@@ -14,7 +14,10 @@ if git grep -n -I -E 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|gh[pousr]_[A-Za-z0-9
 fi
 
 email_matches="$(git grep -n -I -E '[[:alnum:]._%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}' -- ':!uv.lock' ':!scripts/audit-public-repo.sh' || true)"
-if printf '%s\n' "$email_matches" | grep -v '@example\.com' | grep -q .; then
+# RFC 2606 reserves example.com/.org/.net and every name under them for
+# documentation, so those can never be a real mailbox. Exempt subdomains too:
+# matching only the bare domain failed on fixtures like user:pw@client.example.com.
+if printf '%s\n' "$email_matches" | grep -vE '@([[:alnum:]-]+\.)*example\.(com|org|net)\b' | grep -q .; then
   echo "Email address found; use neutral placeholders" >&2
   exit 1
 fi

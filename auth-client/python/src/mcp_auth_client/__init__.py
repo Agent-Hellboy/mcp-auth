@@ -2,7 +2,9 @@
 
 from .boundaries import DownstreamToken, MCPClientToken, ResourceServerCredential
 from .challenge import (
+    BearerAuthResult,
     ProtectedResourceChallenge,
+    authorize_bearer,
     parse_www_authenticate,
     unauthorized_headers,
     unauthorized_headers_for_error,
@@ -25,13 +27,15 @@ from .token_exchange import (
     TokenExchangeClient,
     TokenSet,
 )
-from .verifier import JWTVerifier, TokenClaims, TokenVerificationError
+from .verifier import InsufficientScopeError, JWTVerifier, TokenClaims, TokenVerificationError
 
 __all__ = [
     "AuthorizationServerConfig",
     "AsyncHTTPClient",
+    "BearerAuthResult",
     "DownstreamToken",
     "ExchangedToken",
+    "InsufficientScopeError",
     "JWTVerifier",
     "MCPClientToken",
     "OAuthState",
@@ -51,6 +55,7 @@ __all__ = [
     "required_scopes",
     "parse_www_authenticate",
     "authorization_url",
+    "authorize_bearer",
     "build_exchange_client",
     "build_remote_auth",
     "public_base_url",

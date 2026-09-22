@@ -6,10 +6,20 @@ What this server guarantees, and what your deployment still has to do.
 
 - Authorization Code + PKCE (`S256`) is required for public clients; there is no
   implicit or password grant.
-- `/authorize` matches the registered `redirect_uri` exactly. Registration
-  accepts the RFC 8252 shapes — HTTPS, loopback `http`, and private-use schemes
-  — which is what desktop MCP clients use. See
+- `/authorize` matches a dynamically registered `redirect_uri` exactly.
+  Registration accepts the RFC 8252 shapes — HTTPS, loopback `http`, and
+  private-use schemes — which is what desktop MCP clients use. The connector
+  allowlist matches loopback `http` by scheme, hostname, and path and ignores
+  the port; `http://127.0.0.1:*`, `http://localhost:*`, and `http://[::1]:*`
+  match any path on that host. See
   [the deviation note](auth-server.md#client-registration-and-consent).
+- A `client_id` that is an HTTPS URL is fetched as a Client ID Metadata
+  Document. The fetch does not follow redirects, rejects credentialed URLs and
+  non-loopback IP literals, and does not resolve hostnames, so a name that
+  points at a private address is not blocked. Dynamic registration still works.
+- Registration failures and an `/authorize` for an unknown `client_id` are
+  audit events. Redirect URIs are logged; tokens, secrets, codes, keys, and
+  assertions are not.
 - The token-exchange grant requires the caller to authenticate as a
   pre-registered resource server (RFC 7523 `private_key_jwt`) and to present a
   `subject_token` this server itself issued. It is not an open relay to the
@@ -36,6 +46,8 @@ What this server guarantees, and what your deployment still has to do.
 - Verifiers are RS256-only, refresh JWKS on a bounded schedule, and validate
   `iss`, `aud`, `exp`, `nbf`, `sub`, and required scopes.
 - Tokens, secrets, codes, keys, and assertions are redacted from audit logs.
+  An upstream token-exchange fault is `server_error` (502 or 503) with an audit
+  `reason`. `invalid_target` is only an audience the exchanger rejected.
 - A resource server must never forward an inbound MCP token to a downstream API.
   See [token boundaries](architecture.md#token-boundaries).
 

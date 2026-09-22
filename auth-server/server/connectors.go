@@ -48,8 +48,9 @@ type ConnectorConfig struct {
 	// (Cursor, Claude Desktop, ...) may register via dynamic client
 	// registration, in addition to the scheme/host checks validRedirect
 	// already applies. Optional: empty means any redirect_uri that passes
-	// validRedirect is accepted, which is required for clients using a
-	// loopback listener on an unpredictable port.
+	// validRedirect is accepted. An http loopback entry ignores the port.
+	// http://127.0.0.1:*, http://localhost:*, and http://[::1]:* match any
+	// path on that host, which is what an ephemeral desktop listener needs.
 	AllowedClientRedirectURIs []string `json:"allowed_client_redirect_uris"`
 	// DownstreamTokenStrategy selects how a resource server's downstream
 	// credential is obtained: "upstream_session" (default) reuses and
@@ -161,7 +162,7 @@ func (c ConnectorConfig) validate(name string, allowInsecure bool) error {
 		}
 	}
 	for _, redirectURI := range c.AllowedUpstreamCallbackURIs {
-		if err := validAbsoluteURI(redirectURI); err != nil {
+		if err := validUpstreamCallbackURI(redirectURI); err != nil {
 			return fmt.Errorf("connector %q has an invalid allowed upstream callback URI: %w", name, err)
 		}
 	}
@@ -237,14 +238,6 @@ func (c ConnectorConfig) resolvedIdentityClaims() []string {
 		return []string{"sub"}
 	}
 	return c.IdentityClaims
-}
-
-func validAbsoluteURI(value string) error {
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Fragment != "" {
-		return errors.New("must be an absolute URI with no fragment")
-	}
-	return nil
 }
 
 // ResolvedDownstreamTokenStrategy returns the configured strategy, defaulting

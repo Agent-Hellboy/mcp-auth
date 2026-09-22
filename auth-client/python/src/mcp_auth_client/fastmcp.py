@@ -43,10 +43,14 @@ class RemoteAuthProvider:
             "issuer": self.token_verifier.issuer,
             "audience": self.token_verifier.audience,
         }
+        plan = self.fastmcp_construction()
         if "ssrf_safe" in inspect.signature(FastMCPJWTVerifier).parameters:
             verifier_kwargs["ssrf_safe"] = self.ssrf_safe
+        # FastMCP's verifier turns a missing scope into None, and the HTTP
+        # layer answers 401. Leave its required_scopes empty and put the gate
+        # on the provider, whose middleware answers 403 insufficient_scope.
         if "required_scopes" in inspect.signature(FastMCPJWTVerifier).parameters:
-            verifier_kwargs["required_scopes"] = sorted(self.token_verifier.required_scopes)
+            verifier_kwargs["required_scopes"] = plan["verifier_required_scopes"]
         verifier = FastMCPJWTVerifier(**verifier_kwargs)
         kwargs: dict[str, Any] = {
             "token_verifier": verifier,
@@ -57,8 +61,24 @@ class RemoteAuthProvider:
         if self.allowed_client_redirect_uris is not None:
             kwargs["allowed_client_redirect_uris"] = self.allowed_client_redirect_uris
         if (
-            self.scopes_supported is not None
+            plan["scopes_supported"] is not None
             and "scopes_supported" in provider_signature.parameters
         ):
-            kwargs["scopes_supported"] = self.scopes_supported
-        return FastMCPRemoteAuthProvider(**kwargs)
+            kwargs["scopes_supported"] = plan["scopes_supported"]
+        provider = FastMCPRemoteAuthProvider(**kwargs)
+        provider.required_scopes = plan["provider_required_scopes"]
+        return provider
+
+    def fastmcp_construction(self) -> dict[str, object]:
+        """How this adapter splits the catalogue from the runtime gate.
+
+        ``verifier_required_scopes`` stays empty so FastMCP does not reject a
+        partial token as an authentication failure. ``provider_required_scopes``
+        is the gate. ``scopes_supported`` is the catalogue.
+        """
+
+        return {
+            "verifier_required_scopes": [],
+            "provider_required_scopes": sorted(self.token_verifier.required_scopes),
+            "scopes_supported": self.scopes_supported,
+        }

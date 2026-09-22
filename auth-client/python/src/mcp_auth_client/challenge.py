@@ -1,6 +1,8 @@
 import re
 from dataclasses import dataclass
 
+from .verifier import InsufficientScopeError, JWTVerifier, TokenClaims, TokenVerificationError
+
 
 @dataclass(frozen=True, slots=True)
 class ProtectedResourceChallenge:
@@ -57,3 +59,47 @@ def unauthorized_headers_for_error(
     if description:
         challenge += f', error_description="{description}"'
     return {"WWW-Authenticate": challenge}
+
+
+@dataclass(frozen=True, slots=True)
+class BearerAuthResult:
+    status: int
+    headers: dict[str, str]
+    claims: TokenClaims | None = None
+
+
+async def authorize_bearer(
+    verifier: JWTVerifier,
+    authorization: str | None,
+    resource_metadata_url: str,
+) -> BearerAuthResult:
+    """Decide the HTTP response for one bearer token.
+
+    A missing or invalid token is 401. A token that is valid but missing a
+    required scope is 403 ``insufficient_scope`` with a ``scope`` parameter,
+    matching ``RequireToken`` in the Go SDK.
+    """
+
+    parts = (authorization or "").split()
+    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1]:
+        return BearerAuthResult(401, unauthorized_headers(resource_metadata_url))
+    try:
+        claims = await verifier.verify(parts[1])
+    except InsufficientScopeError:
+        return BearerAuthResult(
+            403,
+            unauthorized_headers_for_error(
+                resource_metadata_url,
+                verifier.required_scopes,
+                "insufficient_scope",
+                "required scope is missing",
+            ),
+        )
+    except TokenVerificationError:
+        return BearerAuthResult(
+            401,
+            unauthorized_headers_for_error(
+                resource_metadata_url, None, "invalid_token", "token is invalid"
+            ),
+        )
+    return BearerAuthResult(200, {}, claims)

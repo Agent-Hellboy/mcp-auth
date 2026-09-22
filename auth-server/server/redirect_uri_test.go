@@ -99,3 +99,99 @@ func TestRegisterAcceptsPrivateUseSchemeRedirect(t *testing.T) {
 		}
 	}
 }
+
+// documentedRedirectURIs are the redirect URIs the authorization-server docs
+// tell an operator to put in allowed_client_redirect_uris. Copying that
+// example has to pass config validation.
+var documentedRedirectURIs = []string{
+	"http://127.0.0.1:*",
+	"http://localhost:*",
+	"http://[::1]:*",
+	"https://claude.ai/api/mcp/auth_callback",
+	"https://www.cursor.com/agents/mcp/oauth/callback",
+	"claude://oauth/callback",
+	"cursor://anysphere.cursor-mcp/oauth/callback",
+	"com.example.app:/oauth/callback",
+}
+
+func TestAllowlistAcceptsDocumentedRedirectURIs(t *testing.T) {
+	connector := ConnectorConfig{
+		Issuer:                    "https://idp.example.com",
+		AuthorizationEndpoint:     "https://idp.example.com/authorize",
+		TokenEndpoint:             "https://idp.example.com/token",
+		JWKSURI:                   "https://idp.example.com/jwks",
+		ClientID:                  "client",
+		TokenEndpointAuthMethod:   "none",
+		ExchangeClientID:          "exchange",
+		MCPScopes:                 []string{"tools:read"},
+		AllowedClientRedirectURIs: append([]string(nil), documentedRedirectURIs...),
+	}
+	if err := connector.validate("example", false); err != nil {
+		t.Fatalf("documented redirect allowlist: %v", err)
+	}
+	for _, value := range documentedRedirectURIs {
+		if err := validAbsoluteURI(value); err != nil {
+			t.Errorf("validAbsoluteURI(%q) = %v", value, err)
+		}
+		if !validRedirect(value) {
+			t.Errorf("validRedirect(%q) = false", value)
+		}
+	}
+	rejected := []string{"https://example.com/cb#fragment", "/relative/callback", "http://evil.example.com/callback"}
+	for _, value := range rejected {
+		if err := validAbsoluteURI(value); err == nil {
+			t.Errorf("validAbsoluteURI(%q) accepted a URI that is not a redirect", value)
+		}
+		if validRedirect(value) {
+			t.Errorf("validRedirect(%q) = true, want false", value)
+		}
+	}
+}
+
+func TestRegisterMatchesLoopbackPortAndExactOtherSchemes(t *testing.T) {
+	instance := testServer(t)
+	instance.Config.RegistrationEnabled = true
+	instance.Config.AllowedClientRedirectURIs = []string{
+		"http://127.0.0.1:*",
+		"http://localhost:39999/callback",
+		"https://client.example.com/callback",
+		"com.example.app:/oauth/callback",
+	}
+
+	accepted := []string{
+		"http://127.0.0.1:40000/callback",
+		"http://127.0.0.1:39999/other",
+		"http://localhost:40000/callback",
+		"https://client.example.com/callback",
+		"com.example.app:/oauth/callback",
+	}
+	for _, redirectURI := range accepted {
+		if code, body := postRegister(instance, redirectURI); code != http.StatusCreated {
+			t.Errorf("POST /register %q = %d (%s), want 201", redirectURI, code, body)
+		}
+	}
+	rejected := []string{
+		"http://localhost:39999/other",
+		"https://client.example.com/other",
+		"https://client.example.com:8443/callback",
+		"com.example.app:/oauth/other",
+		"http://[::1]:40000/callback",
+	}
+	for _, redirectURI := range rejected {
+		if code, body := postRegister(instance, redirectURI); code != http.StatusBadRequest {
+			t.Errorf("POST /register %q = %d (%s), want 400", redirectURI, code, body)
+		}
+	}
+}
+
+func postRegister(instance *Server, redirectURI string) (int, string) {
+	body, _ := json.Marshal(map[string]any{
+		"client_name":                "native client",
+		"redirect_uris":              []string{redirectURI},
+		"token_endpoint_auth_method": "none",
+	})
+	request := httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+	instance.Handler().ServeHTTP(recorder, request)
+	return recorder.Code, recorder.Body.String()
+}

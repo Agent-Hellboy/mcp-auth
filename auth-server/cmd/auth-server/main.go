@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Agent-Hellboy/mcp-auth/auth-server/server"
 )
@@ -60,6 +61,12 @@ func main() {
 	if config.LocalDevelopment && config.PrivateKeyFile == "" {
 		slog.Warn("INSECURE LOCAL DEVELOPMENT: using an ephemeral signing key; all tokens become invalid after restart")
 	}
+	localIdentity := config.LocalDevelopment && config.ConnectorName == ""
+	localExchange := config.LocalDevelopment && config.LocalTokenExchange
+	if localIdentity || localExchange {
+		slog.Warn("INSECURE LOCAL DEVELOPMENT is active", "fixed_subject_identity", localIdentity, "subject", config.LocalSubject, "local_token_exchange", localExchange)
+		go repeatLocalDevelopmentWarning(localIdentity, localExchange)
+	}
 	slog.Info("mcp auth server listening", "addr", config.ListenAddr, "issuer", config.Issuer)
 	if err := http.ListenAndServe(config.ListenAddr, authServer.Handler()); err != nil {
 		slog.Error("server stopped", "error", err)
@@ -91,6 +98,17 @@ func loadResourceClients(store server.Store, path string) error {
 		}
 	}
 	return nil
+}
+
+// repeatLocalDevelopmentWarning keeps the local-development identity path
+// visible for the life of the process. A single line at startup is easy to
+// miss once other logs scroll past it.
+func repeatLocalDevelopmentWarning(localIdentity, tokenExchange bool) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		slog.Warn("INSECURE LOCAL DEVELOPMENT is still active", "fixed_subject_identity", localIdentity, "local_token_exchange", tokenExchange)
+	}
 }
 
 func buildStore(config server.Config) (server.Store, func(), error) {
