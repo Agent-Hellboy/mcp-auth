@@ -73,6 +73,9 @@ type ConnectorConfig struct {
 	// token) to supplement the claims before resolving again — some
 	// providers only expose email/group claims there, not in the ID token.
 	IdentityClaims []string `json:"identity_claims"`
+	// IDTokenNoncePolicy defaults to "required". Set "disabled" only for an
+	// upstream provider whose documented ID-token claims omit nonce.
+	IDTokenNoncePolicy string `json:"id_token_nonce_policy"`
 	// Consent customizes the browser consent page. When omitted, the server
 	// renders its built-in page. website_url and support_url must be absolute
 	// https URLs when set.
@@ -150,6 +153,9 @@ func (c ConnectorConfig) validate(name string, allowInsecure bool) error {
 	}
 	if c.DownstreamTokenStrategy != "" && c.DownstreamTokenStrategy != DownstreamTokenStrategyUpstreamSession && c.DownstreamTokenStrategy != DownstreamTokenStrategyRFC8693 {
 		return fmt.Errorf("connector %q has unsupported downstream_token_strategy", name)
+	}
+	if c.IDTokenNoncePolicy != "" && c.IDTokenNoncePolicy != "required" && c.IDTokenNoncePolicy != "disabled" {
+		return fmt.Errorf("connector %q has unsupported id_token_nonce_policy", name)
 	}
 	for _, algorithm := range c.AllowedAlgorithms {
 		if !validAlgorithm(algorithm) {
@@ -229,6 +235,12 @@ func (c ConnectorConfig) requiresIDToken() bool {
 		return true
 	}
 	return contains(c.Scopes, "openid")
+}
+
+// requiresIDTokenNonce keeps nonce validation mandatory unless a connector
+// explicitly opts out for an upstream that cannot return a nonce claim.
+func (c ConnectorConfig) requiresIDTokenNonce() bool {
+	return c.IDTokenNoncePolicy == "" || c.IDTokenNoncePolicy == "required"
 }
 
 // resolvedIdentityClaims returns the configured identity-claim fallback

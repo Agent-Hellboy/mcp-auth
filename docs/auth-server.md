@@ -421,6 +421,24 @@ may be signed with: any of `RS256`, `PS256`, `ES256`. Defaults to `["RS256"]`
 when unset, matching every connector configured before this field existed —
 a provider that signs with ES256 or PS256 needs it set explicitly.
 
+`id_token_nonce_policy` defaults to `required`: mcp-auth sends a high-entropy
+nonce to the upstream authorization endpoint and requires the same claim in the
+returned ID token. `disabled` is a narrowly scoped provider-compatibility
+setting for an upstream whose published discovery metadata/documentation shows
+that its ID tokens do not carry `nonce`. It is not a general troubleshooting
+switch: use it only after verifying that limitation, because it omits both the
+request parameter and the ID-token check. The one-time, store-consumed upstream
+`state` and S256 PKCE verifier remain mandatory.
+
+For example, a Databricks connector may require this setting when its live
+OIDC discovery advertises no `nonce` claim:
+
+```json
+{
+  "id_token_nonce_policy": "disabled"
+}
+```
+
 ### OIDC or plain OAuth 2.0
 
 Requesting the `openid` scope is what makes a connector OIDC, and that is how

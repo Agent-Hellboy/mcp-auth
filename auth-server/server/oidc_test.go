@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -252,5 +253,57 @@ func TestUpstreamExchangeErrorClassifiesInvalidTarget(t *testing.T) {
 				t.Fatalf("errors.Is(err, ErrUnacceptableAudience) = %v, want %v (err: %v)", got, testCase.wantUnacceptable, err)
 			}
 		})
+	}
+}
+
+func TestOIDCNonceCanBeExplicitlyDisabledForProviderWithoutNonceClaim(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []any{jwkFor(&key.PublicKey, "test-key")}})
+	}))
+	defer jwksServer.Close()
+
+	const issuer = "https://provider.example.com"
+	const clientID = "test-client"
+	now := time.Now().UTC()
+	idToken := signTestIDToken(t, key, "test-key", map[string]any{
+		"iss": issuer, "sub": "user-1", "aud": clientID,
+		"iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
+	})
+	provider := &OIDCIdentityProvider{
+		Connector: ConnectorConfig{Issuer: issuer, JWKSURI: jwksServer.URL, IDTokenNoncePolicy: "disabled"},
+		Client:    http.DefaultClient, ClientID: clientID,
+	}
+	location, _, err := provider.Begin(context.Background(), IdentityRequest{}, "state-1")
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	parsed, err := url.Parse(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Query().Get("nonce"); got != "" {
+		t.Fatalf("nonce = %q, want absent for the explicitly disabled policy", got)
+	}
+	if _, err := provider.verifyIDToken(context.Background(), idToken, "not-sent"); err != nil {
+		t.Fatalf("verify ID token without nonce under disabled policy: %v", err)
+	}
+}
+
+func TestIDTokenNoncePolicyValidation(t *testing.T) {
+	for _, policy := range []string{"", "required", "disabled"} {
+		connector := validTestConnector()
+		connector.IDTokenNoncePolicy = policy
+		if err := connector.validate("test", false); err != nil {
+			t.Fatalf("policy %q rejected: %v", policy, err)
+		}
+	}
+	connector := validTestConnector()
+	connector.IDTokenNoncePolicy = "optional"
+	if err := connector.validate("test", false); err == nil {
+		t.Fatal("unsupported nonce policy was accepted")
 	}
 }
