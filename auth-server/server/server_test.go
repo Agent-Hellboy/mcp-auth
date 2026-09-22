@@ -184,8 +184,9 @@ VALUES ('legacy-client','legacy','["https://client.example.com/callback"]','none
 	}
 	defer store.Close()
 
-	if _, err := store.GetClient("legacy-client"); err != nil {
-		t.Fatalf("pre-existing client did not survive migration: %v", err)
+	legacy, err := store.GetClient("legacy-client")
+	if err != nil || legacy.DynamicRegistration {
+		t.Fatalf("pre-existing client did not survive migration: %v, %+v", err, legacy)
 	}
 	if err := store.SaveClient(Client{ID: "resource-server", TokenEndpointAuth: "private_key_jwt", PublicKeyPEM: "test"}); err != nil {
 		t.Fatalf("save client using migrated column: %v", err)
@@ -193,6 +194,13 @@ VALUES ('legacy-client','legacy','["https://client.example.com/callback"]','none
 	client, err := store.GetClient("resource-server")
 	if err != nil || client.PublicKeyPEM != "test" {
 		t.Fatalf("public_key_pem did not round-trip after migration: %v, %+v", err, client)
+	}
+	if err := store.SaveClient(Client{ID: "dyn-client", Name: "Dyn App", TokenEndpointAuth: "none", RedirectURIs: []string{"http://127.0.0.1:9/callback"}, DynamicRegistration: true}); err != nil {
+		t.Fatalf("save dynamically registered client: %v", err)
+	}
+	dyn, err := store.GetClient("dyn-client")
+	if err != nil || !dyn.DynamicRegistration || dyn.Name != "Dyn App" {
+		t.Fatalf("dynamic registration did not round-trip after migration: %v, %+v", err, dyn)
 	}
 	if err := store.ConsumeClientAssertionJTI("resource-server", "jti-1", time.Now().Add(time.Minute)); err != nil {
 		t.Fatalf("client_assertions table missing after migration: %v", err)

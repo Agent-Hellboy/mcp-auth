@@ -54,6 +54,9 @@ type Config struct {
 	// store directly, which is a real obstacle for a server whose job is
 	// being integrated against by third-party clients.
 	LogLevel string
+	// Consent is copied from the selected connector. Nil uses the built-in
+	// consent page. It is not read from an environment variable.
+	Consent *ConsentConfig
 }
 
 // Validate applies deployment safety checks that are intentionally separate

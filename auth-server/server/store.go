@@ -17,6 +17,11 @@ type Client struct {
 	RedirectURIs      []string
 	TokenEndpointAuth string
 	SecretHash        string
+	// DynamicRegistration is true for clients created by POST /register.
+	// Their client_name was supplied by the application and has not been
+	// verified, so the consent page says so. Operator-provisioned clients
+	// leave this false.
+	DynamicRegistration bool
 	// PublicKeyPEM holds an RSA or EC public key (PKIX, PEM-encoded) for
 	// clients registered with TokenEndpointAuth "private_key_jwt". It is
 	// never secret.

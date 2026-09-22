@@ -14,6 +14,17 @@ What this server guarantees, and what your deployment still has to do.
   pre-registered resource server (RFC 7523 `private_key_jwt`) and to present a
   `subject_token` this server itself issued. It is not an open relay to the
   upstream connector.
+- The consent page names the client and labels a dynamically registered
+  client's name unverified, because the application supplied `client_name`
+  and this server has not verified it. The consent document and the
+  expired-consent response (HTTP 400) send `Content-Security-Policy`
+  (`default-src 'none'`, `style-src 'unsafe-inline'` for the page's own
+  style element, `form-action 'self'`, `frame-ancestors 'none'`),
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and
+  `Cache-Control: no-store`. Connector `consent.website_url` and
+  `consent.support_url` must be absolute `https` URLs; that is checked when
+  the connector file is loaded. See
+  [the consent page](auth-server.md#consent-page).
 
 ## Tokens
 

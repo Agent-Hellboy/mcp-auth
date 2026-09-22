@@ -184,6 +184,45 @@ an explicit HTTPS/loopback allowlist.
 
 `GET /authorize` requires `response_type=code`, `code_challenge_method=S256`, `code_challenge`, a resource from the configured allow-list, and a registered redirect URI. With one configured resource, `resource` may be omitted and defaults to it. It renders a consent page. In production, accepting consent redirects to the selected connector's upstream authorization endpoint and `/identity/callback` completes the upstream code flow. Local development also supports `approve=true` to exercise the flow without a browser.
 
+### Consent page
+
+The consent page is the only HTML document this server returns to a browser. It shows the MCP client by name, lists each requested scope, shows the resource the access token will be bound to, and says the user will be sent to the upstream identity provider to sign in. The form is `POST` to the issuer's consent endpoint (`ConsentEndpoint`, the issuer plus `/authorize/consent`) with a hidden `consent_id` and buttons named `decision` (`approve` or `deny`).
+
+`client_name` from `POST /register` is the prominent heading. A dynamically registered client is labeled unverified, with the text "This name was supplied by the application and has not been verified." The `client_id` stays on the page for operators. Operator-provisioned clients are not given that label.
+
+An optional `consent` object on the connector customizes the copy without replacing the template. When `consent` is omitted, the server uses its built-in page. `website_url` and `support_url`, when set, must be absolute `https` URLs. `http`, `javascript:`, `data:`, and protocol-relative URLs are rejected when the connector file is loaded.
+
+```json
+"consent": {
+  "display_name": "Inventory",
+  "website_url": "https://inventory.example.com",
+  "page_title": "Authorize Inventory",
+  "subtitle": "Inventory access needs your approval.",
+  "intro_paragraphs": [
+    "Review the application and the access it is requesting before you continue."
+  ],
+  "permissions": [
+    "Read inventory records on your behalf"
+  ],
+  "scope_labels": {
+    "tools:read": "Read data through MCP tools"
+  },
+  "upstream_sso_label": "Example IdP",
+  "support_url": "https://inventory.example.com/support"
+}
+```
+
+`display_name` is the service being authorized. `scope_labels` maps a scope token to a description; a scope with no label is shown as the raw scope string, one list item per scope. `permissions` is a plain-language list and is not matched against scope names. `upstream_sso_label` names the identity provider the user is sent to. When it is empty, the page says "the upstream identity provider".
+
+The consent document and the expired-consent response (still HTTP 400) send:
+
+- `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`
+- `X-Frame-Options: DENY`
+- `Referrer-Policy: no-referrer`
+- `Cache-Control: no-store`
+
+`style-src 'unsafe-inline'` is there because the stylesheet is a `<style>` element in the document. The page loads no scripts and no external assets. An expired consent request is an HTML page in that same layout, telling the user to return to the application and start again. It is not a plain-text error.
+
 Connector files are keyed JSON objects. They contain upstream endpoints, client
 IDs, requested scopes, MCP scopes, and `client_secret_env`—the name of an
 environment variable, never a literal secret. `client_id` can likewise be
@@ -508,6 +547,7 @@ signing keys don't collide.
 - Use a secret-managed persistent signing key and a planned rotation process.
 - Replace `MemoryStore` with a transactional durable implementation.
 - Integrate a real `IdentityProvider` and define consent/session policy.
+- Keep the consent-page response headers at the proxy (`Content-Security-Policy`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`). `consent.website_url` and `consent.support_url` must be absolute HTTPS URLs; `http`, `javascript:`, `data:`, and protocol-relative values are rejected at startup.
 - Restrict registration, scopes, CORS, and trusted origins.
 - Set short access-token TTLs and monitor refresh-token reuse.
 - Keep structured audit logs, with tokens, secrets, codes, keys, and assertions redacted.
