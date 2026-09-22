@@ -1,7 +1,10 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -88,5 +91,68 @@ func TestClientMetadataDocumentAuthorize(t *testing.T) {
 	instance.Handler().ServeHTTP(badSchemeRecorder, badScheme)
 	if badSchemeRecorder.Code != http.StatusBadRequest || !strings.Contains(badSchemeRecorder.Body.String(), "invalid_client") {
 		t.Fatalf("http client_id = %d %s, want 400 invalid_client", badSchemeRecorder.Code, badSchemeRecorder.Body.String())
+	}
+}
+
+// TestDialableIP covers the dial-time SSRF gate. validateClientMetadataURL
+// never resolves a hostname, so this is the only check that sees the address a
+// client_id metadata fetch would actually connect to.
+func TestDialableIP(t *testing.T) {
+	blocked := []string{
+		"10.1.2.3",        // RFC 1918
+		"172.16.0.1",      // RFC 1918
+		"192.168.1.1",     // RFC 1918
+		"169.254.169.254", // link-local, cloud metadata
+		"100.64.0.1",      // carrier NAT
+		"192.0.0.1",       // protocol assignments
+		"198.18.0.1",      // benchmarking
+		"0.0.0.0",         // unspecified
+		"224.0.0.1",       // multicast
+		"fc00::1",         // IPv6 unique local
+		"fe80::1",         // IPv6 link local
+		"::",              // IPv6 unspecified
+	}
+	for _, value := range blocked {
+		ip := net.ParseIP(value)
+		if ip == nil {
+			t.Fatalf("test fixture %q is not an IP", value)
+		}
+		if dialableIP(ip, false) {
+			t.Errorf("dialableIP(%s) allowed a blocked address", value)
+		}
+		if dialableIP(ip, true) {
+			t.Errorf("dialableIP(%s, allowLoopback) allowed a blocked address", value)
+		}
+	}
+	for _, value := range []string{"93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"} {
+		if !dialableIP(net.ParseIP(value), false) {
+			t.Errorf("dialableIP(%s) rejected a public address", value)
+		}
+	}
+	// Loopback is fetchable only for local development, which is how the
+	// httptest-backed tests above reach their metadata server.
+	loopback := net.ParseIP("127.0.0.1")
+	if dialableIP(loopback, false) {
+		t.Error("dialableIP allowed loopback outside local development")
+	}
+	if !dialableIP(loopback, true) {
+		t.Error("dialableIP rejected loopback in local development")
+	}
+}
+
+func TestClientMetadataFetchRefusesPrivateHostname(t *testing.T) {
+	instance := testServer(t)
+	instance.ClientMetadataClient = nil
+	instance.Config.LocalDevelopment = false
+	// localtest.me and its subdomains resolve to 127.0.0.1, so this is a
+	// hostname that validateClientMetadataURL accepts and only the dialer can
+	// refuse. A resolver failure is also a refusal, which is the safe outcome.
+	_, err := instance.fetchClientMetadata(context.Background(), "https://私.localtest.me/client.json")
+	if err == nil {
+		t.Fatal("fetchClientMetadata accepted a hostname resolving to loopback")
+	}
+	var rejected *clientMetadataError
+	if !errors.As(err, &rejected) {
+		t.Fatalf("expected a clientMetadataError, got %T: %v", err, err)
 	}
 }

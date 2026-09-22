@@ -54,14 +54,83 @@ func (s *Server) metadataHTTPClient() *http.Client {
 	if s.ClientMetadataClient != nil {
 		return s.ClientMetadataClient
 	}
+	if s.Config.LocalDevelopment {
+		return loopbackClientMetadataClient
+	}
 	return defaultClientMetadataClient
 }
 
-var defaultClientMetadataClient = &http.Client{
-	Timeout: clientMetadataTimeout,
-	CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	},
+var (
+	defaultClientMetadataClient  = newClientMetadataClient(false)
+	loopbackClientMetadataClient = newClientMetadataClient(true)
+)
+
+func newClientMetadataClient(allowLoopback bool) *http.Client {
+	return &http.Client{
+		Timeout: clientMetadataTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{DialContext: publicOnlyDialContext(allowLoopback)},
+	}
+}
+
+// publicOnlyDialContext resolves the host itself and refuses to connect to an
+// address that is not public unicast.
+//
+// validateClientMetadataURL cannot cover this: it never resolves, so a
+// hostname pointing at a private range passes it. Checking at dial time means
+// the decision is made about the address actually being connected to, which
+// also closes the rebinding window between validation and connection. Every
+// resolved address must be allowed, so a record set mixing a public and a
+// private answer is refused rather than raced.
+func publicOnlyDialContext(allowLoopback bool) func(context.Context, string, string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: clientMetadataTimeout}
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		if len(addrs) == 0 {
+			return nil, errors.New("client metadata host did not resolve")
+		}
+		for _, addr := range addrs {
+			if !dialableIP(addr.IP, allowLoopback) {
+				return nil, errors.New("client metadata host resolves to a blocked address")
+			}
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(addrs[0].IP.String(), port))
+	}
+}
+
+// dialableIP reports whether one resolved address may be fetched. net.IP's own
+// helpers miss carrier NAT, IPv6 unique-local, and the reserved ranges that
+// cloud metadata services and internal fabrics sit behind.
+func dialableIP(ip net.IP, allowLoopback bool) bool {
+	if ip.IsLoopback() {
+		return allowLoopback
+	}
+	if ip.IsUnspecified() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() || ip.IsMulticast() {
+		return false
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		switch {
+		case ip4[0] == 100 && ip4[1]&0xc0 == 64: // 100.64.0.0/10 carrier NAT
+			return false
+		case ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 0: // 192.0.0.0/24 protocol assignments
+			return false
+		case ip4[0] == 198 && ip4[1]&0xfe == 18: // 198.18.0.0/15 benchmarking
+			return false
+		}
+	} else if len(ip) == net.IPv6len && ip[0]&0xfe == 0xfc { // fc00::/7 unique local
+		return false
+	}
+	return ip.IsGlobalUnicast()
 }
 
 // fetchClientMetadata loads an OAuth Client ID Metadata Document
