@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"io"
 	"net/http"
 	"net/url"
@@ -247,13 +246,12 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		s.finishConsent(w, r, consentID, true)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = consentPage.Execute(w, map[string]any{
-		"ID":       consentID,
-		"ClientID": request.ClientID,
-		"Scopes":   strings.Join(request.Scope, " "),
-		"Action":   s.Config.ConsentEndpoint(),
-	})
+	client, err := s.Store.GetClient(request.ClientID)
+	if err != nil {
+		client = Client{ID: request.ClientID}
+	}
+	setConsentDocumentHeaders(w)
+	_ = renderConsentPage(w, buildConsentView(s.Config.Consent, consentID, s.Config.ConsentEndpoint(), request, client))
 }
 
 func (s *Server) consent(w http.ResponseWriter, r *http.Request) {
@@ -267,7 +265,7 @@ func (s *Server) consent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) finishConsent(w http.ResponseWriter, r *http.Request, consentID string, approved bool) {
 	pending, err := s.Store.ConsumeConsentRequest(consentID, s.now())
 	if err != nil {
-		http.Error(w, "consent request expired", http.StatusBadRequest)
+		writeExpiredConsent(w)
 		return
 	}
 	request := pending.Request
@@ -558,7 +556,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	clientID := "mcp_" + randomID()
-	client := Client{ID: clientID, Name: input.ClientName, RedirectURIs: input.RedirectURIs, TokenEndpointAuth: input.TokenEndpointAuth}
+	client := Client{ID: clientID, Name: input.ClientName, RedirectURIs: input.RedirectURIs, TokenEndpointAuth: input.TokenEndpointAuth, DynamicRegistration: true}
 
 	// RFC 7591 section 3.2.1: the response is the full registered client
 	// metadata, not just the identifier. A client that reads grant_types back
@@ -785,5 +783,3 @@ func contains(values []string, want string) bool {
 	}
 	return false
 }
-
-var consentPage = template.Must(template.New("consent").Parse(`<!doctype html><html><body><h1>Authorize MCP client</h1><p>{{.ClientID}} requests: {{.Scopes}}</p><form method="post" action="{{.Action}}"><input type="hidden" name="consent_id" value="{{.ID}}"><button name="decision" value="approve" type="submit">Allow</button><button name="decision" value="deny" type="submit">Deny</button></form></body></html>`))

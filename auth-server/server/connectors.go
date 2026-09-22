@@ -72,6 +72,10 @@ type ConnectorConfig struct {
 	// token) to supplement the claims before resolving again — some
 	// providers only expose email/group claims there, not in the ID token.
 	IdentityClaims []string `json:"identity_claims"`
+	// Consent customizes the browser consent page. When omitted, the server
+	// renders its built-in page. website_url and support_url must be absolute
+	// https URLs when set.
+	Consent *ConsentConfig `json:"consent,omitempty"`
 }
 
 const (
@@ -165,6 +169,9 @@ func (c ConnectorConfig) validate(name string, allowInsecure bool) error {
 		if err := validAbsoluteURI(redirectURI); err != nil {
 			return fmt.Errorf("connector %q has an invalid allowed client redirect URI: %w", name, err)
 		}
+	}
+	if err := c.Consent.validate(name); err != nil {
+		return err
 	}
 	return nil
 }

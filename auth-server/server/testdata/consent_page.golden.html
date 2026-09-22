@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Authorize Inventory</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #eef1f6;
+  --surface: #ffffff;
+  --text: #17202a;
+  --muted: #5c6773;
+  --border: #d5dde6;
+  --accent: #0b57d0;
+  --accent-text: #ffffff;
+  --deny-bg: #ffffff;
+  --deny-text: #3b4450;
+  --deny-border: #6b7785;
+  --warn-bg: #fff4d6;
+  --warn-text: #5c4300;
+  --warn-border: #e6c36a;
+  --link: #0b57d0;
+  --focus: #0b57d0;
+  --code-bg: #f3f5f8;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101318;
+    --surface: #1a1f27;
+    --text: #f2f4f8;
+    --muted: #b4bdca;
+    --border: #323844;
+    --accent: #8eb4ff;
+    --accent-text: #0d1524;
+    --deny-bg: transparent;
+    --deny-text: #e7ebf2;
+    --deny-border: #9aa6b5;
+    --warn-bg: #3a2f12;
+    --warn-text: #f6e2a8;
+    --warn-border: #8a7040;
+    --link: #8eb4ff;
+    --focus: #b9d0ff;
+    --code-bg: #12161c;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.5;
+}
+main {
+  width: min(36rem, calc(100% - 2rem));
+  margin: 2.5rem auto;
+  padding: 1.75rem 1.5rem 1.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.9rem;
+}
+@media (max-width: 40rem) {
+  main {
+    width: 100%;
+    margin: 0;
+    min-height: 100vh;
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+  }
+}
+.eyebrow {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+h1 {
+  margin: 0.2rem 0 0;
+  font-size: 1.8rem;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+h2 {
+  margin: 1.4rem 0 0.4rem;
+  font-size: 0.95rem;
+}
+p { margin: 0.65rem 0 0; }
+.unverified {
+  margin: 0.75rem 0 0;
+  padding: 0.7rem 0.85rem;
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  border: 1px solid var(--warn-border);
+  border-radius: 0.5rem;
+}
+.client-id {
+  margin: 0.75rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.client-id-label {
+  display: block;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.client-id code {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0.35rem 0.5rem;
+  background: var(--code-bg);
+  border-radius: 0.35rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+ul { margin: 0.35rem 0 0; padding-left: 1.15rem; }
+li { margin: 0.45rem 0; }
+.scope-description { display: block; font-weight: 600; }
+.scope-raw {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+.resource {
+  margin: 0.35rem 0 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+}
+.links { display: flex; flex-wrap: wrap; gap: 1rem; }
+.links a { color: var(--link); }
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1.5rem;
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+}
+button {
+  font: inherit;
+  line-height: 1.2;
+  cursor: pointer;
+}
+button.deny {
+  background: var(--deny-bg);
+  color: var(--deny-text);
+  border: 2px solid var(--deny-border);
+  border-radius: 999px;
+  min-height: 2.75rem;
+  min-width: 7.5rem;
+  padding: 0.55rem 1.25rem;
+  font-weight: 600;
+}
+button.allow {
+  background: var(--accent);
+  color: var(--accent-text);
+  border: 2px solid var(--accent);
+  border-radius: 0.5rem;
+  min-height: 2.75rem;
+  min-width: 9rem;
+  padding: 0.55rem 1.5rem;
+  font-weight: 700;
+  margin-left: auto;
+}
+a:focus,
+button:focus {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+</style>
+</head>
+<body>
+<main>
+
+<p class="eyebrow">Application</p>
+<h1>Cursor</h1>
+
+<p class="unverified">Unverified. This name was supplied by the application and has not been verified.</p>
+
+<p class="client-id"><span class="client-id-label">Client ID</span> <code>mcp_0123456789abcdef</code></p>
+<p class="request-line">is requesting access to <strong>Inventory</strong>.</p>
+<p class="subtitle">Inventory access needs your approval.</p>
+<p>Review the application and the access it is requesting before you continue.</p>
+<p>Deny the request if you do not recognize the application.</p>
+
+
+<section>
+<h2>What this allows</h2>
+<ul class="permissions">
+<li>Read inventory records on your behalf</li>
+<li>Update stock counts</li>
+
+</ul>
+</section>
+
+<section>
+<h2>Requested scopes</h2>
+
+<ul class="scopes">
+
+<li>
+<span class="scope-description">Read data through MCP tools</span>
+<span class="scope-raw">tools:read</span>
+</li>
+
+<li>
+<span class="scope-description">tools:write</span>
+
+</li>
+
+</ul>
+
+</section>
+<section>
+<h2>Resource</h2>
+<p>The access token will be bound to this resource.</p>
+<p class="resource">https://mcp.example.com/inventory/mcp</p>
+</section>
+<section>
+<h2>Sign-in</h2>
+<p class="upstream">You will be sent to <strong>Example IdP</strong> to sign in.</p>
+</section>
+
+<p class="links">
+<a href="https://inventory.example.com">Website</a>
+<a href="https://inventory.example.com/support">Support</a>
+</p>
+
+<form method="post" action="https://auth.example.com/authorize/consent">
+<input type="hidden" name="consent_id" value="consent-fixed-id">
+<div class="actions">
+<button class="deny" name="decision" value="deny" type="submit">Deny</button>
+<button class="allow" name="decision" value="approve" type="submit">Allow</button>
+</div>
+</form>
+
+</main>
+</body>
+</html>

@@ -162,6 +162,7 @@ func buildProviders(config server.Config, store server.Store) (server.Config, se
 	}
 	config.AllowedScopes = append([]string(nil), connector.MCPScopes...)
 	config.AllowedClientRedirectURIs = append([]string(nil), connector.AllowedClientRedirectURIs...)
+	config.Consent = copyConsent(connector.Consent)
 	callbackURL := config.IdentityCallbackURL()
 	identity, err := server.NewOIDCIdentityProvider(connector, callbackURL, allowInsecure)
 	if err != nil {
@@ -172,6 +173,25 @@ func buildProviders(config server.Config, store server.Store) (server.Config, se
 		return config, nil, nil, err
 	}
 	return config, identity, exchanger, nil
+}
+
+// copyConsent gives the server config its own consent block so later edits
+// to the loaded connector do not change the page, matching the slice copies
+// above.
+func copyConsent(in *server.ConsentConfig) *server.ConsentConfig {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.IntroParagraphs = append([]string(nil), in.IntroParagraphs...)
+	out.Permissions = append([]string(nil), in.Permissions...)
+	if in.ScopeLabels != nil {
+		out.ScopeLabels = make(map[string]string, len(in.ScopeLabels))
+		for key, value := range in.ScopeLabels {
+			out.ScopeLabels[key] = value
+		}
+	}
+	return &out
 }
 
 // buildTokenExchanger selects the downstream-token strategy the connector is
