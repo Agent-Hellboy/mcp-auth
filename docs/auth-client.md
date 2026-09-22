@@ -56,21 +56,24 @@ auth = RemoteAuthProvider(
 
 Install the FastMCP extra only when using FastMCP. Otherwise call `JWTVerifier.verify` and return `unauthorized_headers(...)` from the resource server's 401 response.
 
-The verifier is explicitly RS256-only, refreshes JWKS on a bounded schedule, validates `iss`, `aud`, `exp`, `nbf`, `sub`, and required scopes, and rejects unknown signing keys. `VerifyContext` and `RequireToken` propagate request cancellation and emit standards-compliant bearer challenges.
+The verifier is explicitly RS256-only, refreshes JWKS on a bounded schedule, validates `iss`, `aud`, `exp`, `nbf`, `sub`, `typ` (absent, `JWT`, or `at+jwt`), and required scopes, and rejects unknown signing keys. Clock skew defaults to 60 seconds (`clock_skew` in Python, `ClockSkew` in Go, `clockSkewSeconds` in TypeScript). JWKS fetches time out after 10 seconds. `VerifyContext` and `RequireToken` propagate request cancellation and emit standards-compliant bearer challenges.
 
 `build_remote_auth`, `build_exchange_client`, `public_base_url`,
 `TokenExchangeError`, and `ExchangedToken` are part of the SDK itself. The
-`ssrf_safe` option controls the JWKS fetch policy: safe mode requires HTTPS for
-non-loopback endpoints and rejects credential-bearing or non-loopback IP URLs;
-disable it only for a controlled local test transport.
+`ssrf_safe` option (TypeScript: `ssrfSafe`) controls the JWKS fetch policy and defaults to on. It checks the URL text, not DNS: it blocks non-HTTPS URLs except loopback names, credential-bearing URLs, and non-loopback IP literals. A hostname that resolves to a private address is not blocked, because `jwks_uri` is operator-configured. Disable it only for a controlled local test transport. The Go client does not apply this URL policy; set `JWKSURL` to an address you trust.
+
+Python requires 3.12 or newer. CPython still supports 3.11; this SDK does not, because 3.12 is the oldest interpreter the repository type-checks and CI did not claim an untested runtime. CI covers 3.12, 3.13, and 3.14.
 
 ## Go
 
 Import `github.com/Agent-Hellboy/mcp-auth/auth-client/go/mcpauth`, configure `JWTVerifier`, and use `DiscoverProtectedResource`, `DiscoverAuthorizationServer`, `ParseWWWAuthenticate`, and `TokenExchangeClient`. The Go SDK uses the standard library and supports bounded token caching. Install the client module at the `auth-client/go/v0.3.0` release tag.
 
+`auth-client/go/go.mod` declares `go 1.18`. That is the language floor of the client: the source uses the predeclared `any` alias and otherwise only long-stable standard-library APIs, and it has no third-party dependencies. The authorization server stays on Go 1.26, which is the oldest Go release this repository supports for the server. CI runs the client and server unit tests, including `govulncheck`, on Go 1.26 and 1.27. End-to-end and image builds stay on 1.26.
+
 ## TypeScript
 
-The TypeScript SDK supports Node.js 20 or newer and has no runtime dependencies.
+The TypeScript SDK supports Node.js 22 or newer and has no runtime dependencies.
+The package is ESM-only. CommonJS callers need Node 22 or later so `require(esm)` can load it. CI tests the SDK on Node 22, 24, and 26.
 Until it is published to npm, install it from `auth-client/typescript` in a
 checkout or reference that directory as a workspace dependency.
 
@@ -203,7 +206,7 @@ docker compose -f deploy/docker-compose.e2e.yml down --volumes --remove-orphans
 
 ## Token exchange
 
-`TokenExchangeClient` sends RFC 8693 parameters and returns a token tagged with the requested downstream audience. Cache keys are bounded and include subject-token identity, audience, and scope. The returned token is a new downstream credential; do not substitute the inbound MCP client token. Keep these boundaries explicit: the MCP client token authenticates the caller to the resource server, the resource server's service credential authenticates its exchange request, and the downstream API token authenticates the provider call.
+`TokenExchangeClient` sends RFC 8693 parameters and returns a token tagged with the requested downstream audience. The endpoint must be `https` unless the caller opts out: `allow_insecure=True` in Python, `allowInsecure: true` in TypeScript, and `AllowInsecure: true` in Go. Loopback `http://` tests and examples pass that flag; the default is to refuse cleartext. Cache keys are a SHA-256 hex digest of the subject token, audience, and sorted scopes, so the raw token is not the map key. Python and TypeScript keep at most 128 entries and drop expired ones on read. Go's `TokenCache` is an LRU of the size passed to `NewTokenCache` and also drops expired entries on read. The returned token is a new downstream credential; do not substitute the inbound MCP client token. Keep these boundaries explicit: the MCP client token authenticates the caller to the resource server, the resource server's service credential authenticates its exchange request, and the downstream API token authenticates the provider call.
 
 ```mermaid
 sequenceDiagram
@@ -226,6 +229,10 @@ sequenceDiagram
 The SDK cache is keyed by subject-token identity, requested audience, and scope.
 It never turns an MCP token into a generic bearer credential, and it never sends
 the resource server's private key to the authorization server.
+
+## Conformance fixtures
+
+`sdk-conformance/cases.json` is the shared verdict list for the three verifiers. `jwks.json` is the public key and `key.json` is the private JWK the tests sign with. Add a case by appending an object (`id`, `description`, `expect` of `accept` or `reject`, plus any header, claim, expiry offset, `nbf` offset, clock skew, or `required_scopes` that differ from `defaults`). `kind: "oversized_jwks"` builds a body larger than 1 MiB from `pad_char` and `pad_count`. Do not commit a PEM or a pre-signed JWT. Run the Python, Go, and TypeScript test suites after adding a case. Repeated fetches for an unknown `kid` are covered by a unit test in each SDK, because the JSON file cannot count HTTP calls.
 
 ## Private-key JWT
 

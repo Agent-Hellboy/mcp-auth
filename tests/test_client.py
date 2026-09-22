@@ -1,6 +1,9 @@
+import asyncio
+import json
 import time
 from pathlib import Path
 
+import httpx
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -80,7 +83,7 @@ async def test_expiry_algorithm_and_missing_scope_rejected() -> None:
             "iss": "https://auth.example.com",
             "sub": "user",
             "aud": "https://mcp.example.com",
-            "exp": time.time() - 1,
+            "exp": time.time() - 120,
         },
         private,
         algorithm="RS256",
@@ -243,3 +246,178 @@ async def test_ssrf_safe_jwks_policy_rejects_private_network_url() -> None:
     )
     with pytest.raises(TokenVerificationError, match="SSRF"):
         await verifier.verify(token)
+
+
+@pytest.mark.asyncio
+async def test_unknown_kid_does_not_refetch_jwks() -> None:
+    private, jwk = key_pair()
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"keys": [jwk]})
+
+    token = jwt.encode(
+        {
+            "iss": "https://auth.example.com",
+            "sub": "user",
+            "aud": "https://mcp.example.com",
+            "exp": time.time() + 300,
+        },
+        private,
+        algorithm="RS256",
+        headers={"kid": "missing"},
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        verifier = JWTVerifier(
+            "https://auth.example.com/jwks",
+            "https://auth.example.com",
+            "https://mcp.example.com",
+            http_client=client,
+        )
+        for _ in range(5):
+            with pytest.raises(TokenVerificationError):
+                await verifier.verify(token)
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_jwks_load_is_single_flight() -> None:
+    private, jwk = key_pair()
+    calls = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.2)
+        return httpx.Response(200, json={"keys": [jwk]})
+
+    token = jwt.encode(
+        {
+            "iss": "https://auth.example.com",
+            "sub": "user",
+            "aud": "https://mcp.example.com",
+            "exp": time.time() + 300,
+        },
+        private,
+        algorithm="RS256",
+        headers={"kid": "test"},
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        verifier = JWTVerifier(
+            "https://auth.example.com/jwks",
+            "https://auth.example.com",
+            "https://mcp.example.com",
+            http_client=client,
+        )
+        first, second = await asyncio.gather(verifier.verify(token), verifier.verify(token))
+    assert first.subject == second.subject == "user"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_jwks_body_over_one_mib_is_rejected() -> None:
+    private, jwk = key_pair()
+    body = json.dumps({"keys": [jwk], "pad": "a" * (1 << 20)}).encode()
+    assert len(body) > 1 << 20
+    token = jwt.encode(
+        {
+            "iss": "https://auth.example.com",
+            "sub": "user",
+            "aud": "https://mcp.example.com",
+            "exp": time.time() + 300,
+        },
+        private,
+        algorithm="RS256",
+        headers={"kid": "test"},
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        verifier = JWTVerifier(
+            "https://auth.example.com/jwks",
+            "https://auth.example.com",
+            "https://mcp.example.com",
+            http_client=client,
+        )
+        with pytest.raises(TokenVerificationError, match="too large"):
+            await verifier.verify(token)
+
+
+@pytest.mark.asyncio
+async def test_jwks_request_uses_explicit_timeout() -> None:
+    private, jwk = key_pair()
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, json={"keys": [jwk]})
+
+    token = jwt.encode(
+        {
+            "iss": "https://auth.example.com",
+            "sub": "user",
+            "aud": "https://mcp.example.com",
+            "exp": time.time() + 300,
+        },
+        private,
+        algorithm="RS256",
+        headers={"kid": "test"},
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        verifier = JWTVerifier(
+            "https://auth.example.com/jwks",
+            "https://auth.example.com",
+            "https://mcp.example.com",
+            http_client=client,
+            http_timeout=10,
+        )
+        await verifier.verify(token)
+    timeout = seen["timeout"]
+    assert isinstance(timeout, dict)
+    assert timeout["read"] == 10
+
+
+@pytest.mark.asyncio
+async def test_stale_jwks_still_verifies_while_refetch_is_throttled() -> None:
+    """A cached key outlives its TTL rather than failing inside the throttle window.
+
+    jwks_min_fetch throttles refetches. When it returned None a kid already in
+    the cache was reported as "signing key was not found", so every token was
+    rejected for the gap between jwks_ttl and jwks_min_fetch.
+    """
+    private, jwk = key_pair()
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"keys": [jwk]})
+
+    token = jwt.encode(
+        {
+            "iss": "https://auth.example.com",
+            "sub": "user",
+            "aud": "https://mcp.example.com",
+            "exp": time.time() + 300,
+        },
+        private,
+        algorithm="RS256",
+        headers={"kid": jwk["kid"], "typ": "at+jwt"},
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        verifier = JWTVerifier(
+            "https://auth.example.com/jwks",
+            "https://auth.example.com",
+            "https://mcp.example.com",
+            http_client=client,
+            jwks_ttl=0.01,
+            jwks_min_fetch=30.0,
+        )
+        assert (await verifier.verify(token)).subject == "user"
+        await asyncio.sleep(0.05)
+        assert (await verifier.verify(token)).subject == "user"
+    assert calls == 1

@@ -1,7 +1,11 @@
 import { createPublicKey, verify as verifySignature, type JsonWebKey } from "node:crypto";
 import { isIP } from "node:net";
 
+import { DEFAULT_TIMEOUT_MS, requestTimeout } from "./timeout.js";
+
 const MAX_JWKS_BYTES = 1024 * 1024;
+const DEFAULT_JWKS_MIN_FETCH_MS = 30_000;
+const DEFAULT_UNKNOWN_KEY_TTL_MS = 30_000;
 
 export class TokenVerificationError extends Error {
   constructor(message = "invalid MCP access token", options?: ErrorOptions) {
@@ -27,6 +31,9 @@ export interface JWTVerifierOptions {
   jwksTtlMs?: number;
   clockSkewSeconds?: number;
   ssrfSafe?: boolean;
+  timeoutMs?: number;
+  jwksMinFetchMs?: number;
+  unknownKeyTtlMs?: number;
 }
 
 interface JWKSDocument { keys: JsonWebKey[] }
@@ -56,8 +63,13 @@ export class JWTVerifier {
   private readonly jwksTtlMs: number;
   private readonly clockSkewSeconds: number;
   private readonly ssrfSafe: boolean;
+  private readonly timeoutMs: number;
+  private readonly jwksMinFetchMs: number;
+  private readonly unknownKeyTtlMs: number;
   private keys = new Map<string, JsonWebKey>();
   private loadedAt = 0;
+  private lastRefresh = 0;
+  private readonly unknownKids = new Map<string, number>();
   private loading: Promise<void> | undefined;
 
   constructor(options: JWTVerifierOptions) {
@@ -69,6 +81,9 @@ export class JWTVerifier {
     this.jwksTtlMs = options.jwksTtlMs ?? 300_000;
     this.clockSkewSeconds = options.clockSkewSeconds ?? 60;
     this.ssrfSafe = options.ssrfSafe ?? true;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.jwksMinFetchMs = options.jwksMinFetchMs ?? DEFAULT_JWKS_MIN_FETCH_MS;
+    this.unknownKeyTtlMs = options.unknownKeyTtlMs ?? DEFAULT_UNKNOWN_KEY_TTL_MS;
   }
 
   async verify(token: string, signal?: AbortSignal): Promise<TokenClaims> {
@@ -83,8 +98,7 @@ export class JWTVerifier {
     }
     if (typeof header.kid !== "string" || !header.kid) throw new TokenVerificationError("JWT kid is missing");
 
-    let jwk = await this.key(header.kid, false, signal);
-    if (!jwk) jwk = await this.key(header.kid, true, signal);
+    const jwk = await this.signingKey(header.kid, signal);
     if (!jwk) throw new TokenVerificationError("JWT signing key was not found");
     let validSignature = false;
     try {
@@ -117,39 +131,86 @@ export class JWTVerifier {
     return { subject: claims.sub, issuer: this.issuer, audience: tokenAudiences, scopes, claims };
   }
 
-  private async key(kid: string, force: boolean, signal?: AbortSignal): Promise<JsonWebKey | undefined> {
-    if (force || this.keys.size === 0 || Date.now() - this.loadedAt >= this.jwksTtlMs) await this.load(signal);
-    return this.keys.get(kid);
+  private fresh(): boolean {
+    return this.keys.size > 0 && Date.now() - this.loadedAt < this.jwksTtlMs;
   }
 
-  private async load(signal?: AbortSignal): Promise<void> {
+  // throttled reports whether a refresh happened too recently to allow
+  // another. A cached key is still returned by signingKey when it holds one,
+  // so throttling never rejects a token the current document can verify.
+  private throttled(): boolean {
+    return this.lastRefresh > 0 && Date.now() - this.lastRefresh < this.jwksMinFetchMs;
+  }
+
+  private recentMiss(kid: string): boolean {
+    const missedAt = this.unknownKids.get(kid);
+    if (missedAt === undefined) return false;
+    const now = Date.now();
+    return now - missedAt < this.unknownKeyTtlMs && now - this.lastRefresh < this.jwksMinFetchMs;
+  }
+
+  private async signingKey(kid: string, signal?: AbortSignal): Promise<JsonWebKey | undefined> {
+    const cached = this.keys.get(kid);
+    if (cached && this.fresh()) return cached;
+    if (this.recentMiss(kid)) return undefined;
+    // The refresh interval is global, not per kid. Keying it on repeated
+    // misses of the same kid let an unauthenticated caller send a stream of
+    // unique kids and draw one JWKS request per token.
+    if (this.throttled()) return cached;
+    // A kid that is absent from a populated cache needs its own fetch. Joining
+    // an ordinary load that is already in flight would observe a document that
+    // was requested before this kid was known.
+    const force = this.keys.size > 0 && !this.keys.has(kid);
+    await this.load(signal, force);
+    const found = this.keys.get(kid);
+    if (found) this.unknownKids.delete(kid);
+    else this.unknownKids.set(kid, Date.now());
+    return found;
+  }
+
+  private async load(signal: AbortSignal | undefined, force: boolean): Promise<void> {
+    if (this.loading) {
+      const inflight = this.loading;
+      await inflight;
+      if (!force) return;
+      if (this.loading) return this.loading;
+    }
     if (this.loading) return this.loading;
+    const { signal: requestSignal, release } = requestTimeout(this.timeoutMs, signal);
+    let pending: Promise<void>;
+    pending = this.fetchJwks(requestSignal).finally(() => {
+      release();
+      if (this.loading === pending) this.loading = undefined;
+    });
+    this.loading = pending;
+    return pending;
+  }
+
+
+  private async fetchJwks(signal?: AbortSignal): Promise<void> {
     this.validateJwksUri();
-    this.loading = (async () => {
-      try {
-        const init: RequestInit = { headers: { accept: "application/json" }, redirect: "error" };
-        if (signal) init.signal = signal;
-        const response = await this.fetcher(this.jwksUri, init);
-        if (!response.ok) throw new Error(`JWKS returned HTTP ${response.status}`);
-        const text = await response.text();
-        if (Buffer.byteLength(text) > MAX_JWKS_BYTES) throw new Error("JWKS response is too large");
-        const document: unknown = JSON.parse(text);
-        if (!document || typeof document !== "object" || !Array.isArray((document as JWKSDocument).keys)) {
-          throw new Error("JWKS response is invalid");
-        }
-        const next = new Map<string, JsonWebKey>();
-        for (const key of (document as JWKSDocument).keys) {
-          if (key.kty === "RSA" && typeof key.kid === "string") next.set(key.kid, key);
-        }
-        this.keys = next;
-        this.loadedAt = Date.now();
-      } catch (error) {
-        throw new TokenVerificationError("unable to load JWKS", { cause: error });
-      } finally {
-        this.loading = undefined;
+    try {
+      const init: RequestInit = { headers: { accept: "application/json" }, redirect: "error" };
+      if (signal) init.signal = signal;
+      const response = await this.fetcher(this.jwksUri, init);
+      if (!response.ok) throw new Error(`JWKS returned HTTP ${response.status}`);
+      const text = await response.text();
+      if (Buffer.byteLength(text) > MAX_JWKS_BYTES) throw new Error("JWKS response is too large");
+      const document: unknown = JSON.parse(text);
+      if (!document || typeof document !== "object" || !Array.isArray((document as JWKSDocument).keys)) {
+        throw new Error("JWKS response is invalid");
       }
-    })();
-    return this.loading;
+      const next = new Map<string, JsonWebKey>();
+      for (const key of (document as JWKSDocument).keys) {
+        if (key.kty === "RSA" && typeof key.kid === "string") next.set(key.kid, key);
+      }
+      this.keys = next;
+      const now = Date.now();
+      this.loadedAt = now;
+      this.lastRefresh = now;
+    } catch (error) {
+      throw new TokenVerificationError("unable to load JWKS", { cause: error });
+    }
   }
 
   private validateJwksUri(): void {

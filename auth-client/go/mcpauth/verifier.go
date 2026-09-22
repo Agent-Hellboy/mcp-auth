@@ -81,8 +81,14 @@ func (v *JWTVerifier) VerifyContext(ctx context.Context, token string) (TokenCla
 	if !ok || !v.allowedAlgorithm(algorithm) {
 		return TokenClaims{}, fmt.Errorf("%w: algorithm", ErrInvalidToken)
 	}
-	if typ, ok := header["typ"].(string); ok && typ != "JWT" && typ != "at+jwt" {
-		return TokenClaims{}, fmt.Errorf("%w: typ", ErrInvalidToken)
+	// A present typ must be a string: a number, array, or object is not one of
+	// the allowed values, so type-asserting and ignoring the failure let it
+	// through unchecked.
+	if raw, present := header["typ"]; present {
+		typ, ok := raw.(string)
+		if !ok || (typ != "JWT" && typ != "at+jwt") {
+			return TokenClaims{}, fmt.Errorf("%w: typ", ErrInvalidToken)
+		}
 	}
 	kid, ok := header["kid"].(string)
 	if !ok || kid == "" {
@@ -235,7 +241,14 @@ func (v *JWTVerifier) ensureKeys(ctx context.Context, kid, algorithm string) (*r
 	var raw struct {
 		Keys []map[string]string `json:"keys"`
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, maxJWKSBody)).Decode(&raw); err != nil {
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxJWKSBody+1))
+	if err != nil {
+		return nil, fmt.Errorf("%w: JWKS read", ErrInvalidToken)
+	}
+	if len(body) > maxJWKSBody {
+		return nil, fmt.Errorf("%w: JWKS too large", ErrInvalidToken)
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("%w: JWKS JSON", ErrInvalidToken)
 	}
 	keys := map[string]*rsa.PublicKey{}

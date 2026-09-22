@@ -218,7 +218,7 @@ def run_flow(validate_issuer: bool) -> None:
                 "compose-resource-server", private_key_pem, key_id
             )
             async with TokenExchangeClient(
-                f"{AUTH_URL}/token", client_auth=client_auth
+                f"{AUTH_URL}/token", client_auth=client_auth, allow_insecure=True
             ) as exchange_client:
                 exchanged = await exchange_client.exchange(
                     access_token,

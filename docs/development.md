@@ -1,6 +1,6 @@
 # Local development
 
-Requirements: Go 1.26+, Python 3.12+, and Node.js 20+.
+Requirements: Go 1.26+ for the authorization server, Python 3.12+, and Node.js 22+. The Go client module declares `go 1.18` so older toolchains can import it; CI still tests that module on Go 1.26 and 1.27. Python 3.11 is not supported: 3.12 is the oldest interpreter this repository type-checks, even though CPython still supports 3.11. CI tests Python 3.12, 3.13, and 3.14, and Node 22, 24, and 26 for the TypeScript SDK. End-to-end jobs stay on one version of each language (Go 1.26, Python 3.12, Node 24).
 
 ```bash
 python -m venv .venv
@@ -52,6 +52,8 @@ builds a multi-arch `auth-server` image and pushes
 not a prerelease). The workflow logs in with repository secrets
 `DOCKER_USERNAME` and `DOCKER_PASSWORD` (a Docker Hub access token, not an
 account password).
+
+SDK verifier parity cases live in `sdk-conformance/cases.json`, next to `jwks.json` and `key.json`. Each language test signs the case claims with the shared private JWK and asserts the `expect` verdict. To add a case, append an object with an `id`, a `description`, and `expect` of `accept` or `reject`. Override `header`, `claims`, `exp_offset_seconds`, `nbf_offset_seconds`, `clock_skew_seconds`, or `required_scopes` only for the fields that differ from `defaults`. Use `kind: "oversized_jwks"` for the 1 MiB body cap. Do not commit a PEM file or a pre-signed JWT; the public-repository audit rejects both. Run `uv run pytest -q`, `cd auth-client/go && GOWORK=off go test ./...`, and `npm test --prefix auth-client/typescript`.
 
 The compatibility checks cover the shared authorization flow used by the
 2025-06-18 and 2026-07-28 MCP authorization specifications. The server emits

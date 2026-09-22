@@ -55,11 +55,19 @@ def build_exchange_client(
     client_id: str,
     private_key: str | bytes,
     key_id: str,
+    allow_insecure: bool = False,
 ) -> _ExchangeAdapter:
-    """Build a lazy RFC 8693 client for a separate downstream audience."""
+    """Build a lazy RFC 8693 client for a separate downstream audience.
+
+    allow_insecure opts out of the https requirement for a loopback or other
+    deliberately cleartext token endpoint. It is off by default.
+    """
 
     auth = PrivateKeyJWTClientAuth(client_id, private_key, key_id)
-    return _ExchangeAdapter(TokenExchangeClient(token_endpoint, client_auth=auth), audience)
+    return _ExchangeAdapter(
+        TokenExchangeClient(token_endpoint, client_auth=auth, allow_insecure=allow_insecure),
+        audience,
+    )
 
 
 def scope_policy(

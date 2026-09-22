@@ -1,9 +1,12 @@
+import hashlib
+
 import httpx
 import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from mcp_auth_client import PrivateKeyJWTClientAuth, TokenExchangeClient
+from mcp_auth_client.token_exchange import _exchange_cache_key
 
 
 @pytest.mark.asyncio
@@ -52,3 +55,16 @@ def test_private_key_jwt_assertion() -> None:
         assertion, key.public_key(), algorithms=["RS256"], audience="https://auth.example.com/token"
     )
     assert claims["sub"] == "client"
+
+
+def test_token_endpoint_requires_https_unless_opted_out() -> None:
+    with pytest.raises(ValueError, match="https"):
+        TokenExchangeClient("http://127.0.0.1/token")
+    TokenExchangeClient("http://127.0.0.1/token", allow_insecure=True)
+    TokenExchangeClient("https://auth.example.com/token")
+
+
+def test_exchange_cache_key_hashes_token_audience_and_scopes() -> None:
+    key = _exchange_cache_key("subject-token", "https://api.example.com", {"b", "a"})
+    assert key == hashlib.sha256(b"subject-token\0https://api.example.com\0a b").hexdigest()
+    assert "subject-token" not in key

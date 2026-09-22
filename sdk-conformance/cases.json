@@ -1,0 +1,122 @@
+{
+  "max_jwks_bytes": 1048576,
+  "pad_char": "a",
+  "pad_count": 1048576,
+  "defaults": {
+    "issuer": "https://auth.example.com",
+    "audience": "https://mcp.example.com",
+    "clock_skew_seconds": 60,
+    "exp_offset_seconds": 300,
+    "header": {
+      "alg": "RS256",
+      "typ": "at+jwt",
+      "kid": "conformance"
+    },
+    "claims": {
+      "iss": "https://auth.example.com",
+      "sub": "user",
+      "aud": "https://mcp.example.com",
+      "scope": "tools:read"
+    }
+  },
+  "cases": [
+    {
+      "id": "typ-at-jwt",
+      "description": "An RFC 9068 access token with typ at+jwt is accepted.",
+      "header": {
+        "typ": "at+jwt"
+      },
+      "expect": "accept"
+    },
+    {
+      "id": "typ-jwt",
+      "description": "typ JWT is accepted.",
+      "header": {
+        "typ": "JWT"
+      },
+      "expect": "accept"
+    },
+    {
+      "id": "typ-id-token",
+      "description": "typ id_token is rejected. Absent typ, JWT, and at+jwt are the only allowed type headers, compared case-sensitively.",
+      "header": {
+        "typ": "id_token"
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "typ-not-a-string",
+      "description": "A non-string typ is rejected. Only an absent typ, JWT, or at+jwt is allowed, so a number must not slip past a string-only type check.",
+      "header": {
+        "typ": 42
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "exp-within-skew",
+      "description": "A token that expired 30 seconds ago is accepted when clock skew is 60 seconds.",
+      "exp_offset_seconds": -30,
+      "clock_skew_seconds": 60,
+      "expect": "accept"
+    },
+    {
+      "id": "exp-beyond-skew",
+      "description": "A token that expired 90 seconds ago is rejected when clock skew is 60 seconds.",
+      "exp_offset_seconds": -90,
+      "clock_skew_seconds": 60,
+      "expect": "reject"
+    },
+    {
+      "id": "nbf-within-skew",
+      "description": "A token whose nbf is 30 seconds in the future is accepted when clock skew is 60 seconds.",
+      "nbf_offset_seconds": 30,
+      "clock_skew_seconds": 60,
+      "expect": "accept"
+    },
+    {
+      "id": "unknown-kid",
+      "description": "A kid that is absent from the JWKS is rejected. This fixture checks the verdict only. Each SDK also has a unit test that repeated requests for the same unknown kid do not each refetch JWKS.",
+      "header": {
+        "kid": "missing"
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "oversized-jwks",
+      "kind": "oversized_jwks",
+      "description": "A JWKS document larger than max_jwks_bytes (1 MiB) is rejected even though its keys array contains the signing key. Harnesses build the body as JSON with the fixture keys plus a pad string of pad_char repeated pad_count times, which makes the UTF-8 body exceed 1 MiB.",
+      "expect": "reject"
+    },
+    {
+      "id": "one-of-two-required-scopes",
+      "description": "When tools:read and tools:write are both required, a token that includes only tools:read is rejected. Every listed scope is mandatory; one match out of two is not enough.",
+      "claims": {
+        "scope": "tools:read"
+      },
+      "required_scopes": [
+        "tools:read",
+        "tools:write"
+      ],
+      "expect": "reject"
+    },
+    {
+      "id": "aud-string",
+      "description": "aud as a single string matches the configured audience.",
+      "claims": {
+        "aud": "https://mcp.example.com"
+      },
+      "expect": "accept"
+    },
+    {
+      "id": "aud-array",
+      "description": "aud as an array is accepted when it contains the configured audience.",
+      "claims": {
+        "aud": [
+          "https://other.example.com",
+          "https://mcp.example.com"
+        ]
+      },
+      "expect": "accept"
+    }
+  ]
+}

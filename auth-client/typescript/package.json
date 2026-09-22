@@ -17,7 +17,7 @@
     "test": "npm run build && node --test dist/test/*.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "engines": { "node": ">=20" },
+  "engines": { "node": ">=22" },
   "keywords": ["mcp", "oauth", "jwt", "authorization"],
   "license": "MIT",
   "repository": {
