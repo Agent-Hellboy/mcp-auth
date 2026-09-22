@@ -317,7 +317,7 @@ func (e *OIDCTokenExchanger) Exchange(ctx context.Context, exchange ExchangeRequ
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return ExchangeResponse{}, fmt.Errorf("token exchange returned HTTP %d", response.StatusCode)
+		return ExchangeResponse{}, upstreamExchangeError(response)
 	}
 	var token struct {
 		AccessToken string `json:"access_token"`
@@ -593,4 +593,26 @@ func rsaExponent(data []byte) (int, error) {
 		return 0, errors.New("RSA exponent is out of range")
 	}
 	return int(exponent), nil
+}
+
+// upstreamExchangeError turns a non-2xx token-exchange response into an error
+// the /token classifier can act on. RFC 6749 section 5.2 carries the error
+// code in the body, so discarding it collapsed an upstream invalid_target -
+// a genuinely unacceptable audience, which belongs at 400 - into a 502
+// server_error. Only the code is surfaced: error_description is upstream
+// controlled text and does not belong in this server's own error string.
+func upstreamExchangeError(response *http.Response) error {
+	var payload struct {
+		Error string `json:"error"`
+	}
+	body, _ := io.ReadAll(io.LimitReader(response.Body, maxJWKSResponseBytes))
+	_ = json.Unmarshal(body, &payload)
+	switch {
+	case payload.Error == "invalid_target":
+		return fmt.Errorf("%w: upstream rejected the requested audience", ErrUnacceptableAudience)
+	case payload.Error != "":
+		return fmt.Errorf("token exchange returned HTTP %d (%s)", response.StatusCode, payload.Error)
+	default:
+		return fmt.Errorf("token exchange returned HTTP %d", response.StatusCode)
+	}
 }
