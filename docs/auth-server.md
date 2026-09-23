@@ -4,6 +4,26 @@ The Go authorization server presents standard OAuth endpoints to MCP clients and
 adapts a selected upstream OIDC or OAuth 2.0 provider at runtime. One process is
 bound to one connector and one MCP resource audience.
 
+## Standards and compatibility
+
+The server supports the MCP OAuth 2.1 authorization profile: RFC 8414
+Authorization Server Metadata, RFC 9728 Protected Resource Metadata, mandatory
+PKCE S256, resource indicators and audience-bound tokens, refresh-token
+rotation, RFC 9207 authorization-response `iss`, and Client ID Metadata
+Documents (CIMD) when enabled. CIMD is disabled by default and can be enabled
+with `MCP_AUTH_CLIENT_ID_METADATA_ENABLED`; metadata reports support according
+to that setting. Dynamic Client Registration remains available as a fallback
+and is disabled by default; set `MCP_AUTH_REGISTRATION_ENABLED` to enable it.
+Compatibility follows the MCP
+specification versions described in the
+[architecture guide](architecture.md#standards-and-roles).
+
+mcp-auth is an authorization broker, not an identity provider. MFA, directory
+policy, user lifecycle, and upstream credentials remain the responsibility of
+the configured upstream IdP. This implementation does not claim every OAuth
+extension or every MCP specification responsibility; clients, resource
+servers, and authorization servers each have distinct normative roles.
+
 ```mermaid
 flowchart LR
     client["MCP client"]
@@ -26,7 +46,7 @@ flowchart LR
     idp["Upstream OIDC / OAuth 2.0 provider"]
     resource["MCP resource server"]
 
-    client <-->|"Authorization Code + PKCE"| endpoints
+    client <-->|"OAuth 2.1 Authorization Code + PKCE S256"| endpoints
     identity <-->|"Login, ID token, or userinfo"| idp
     exchange <-->|"Access / refresh token"| idp
     endpoints -->|"MCP JWT"| client

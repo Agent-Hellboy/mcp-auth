@@ -156,6 +156,7 @@ func (s *Server) authorizationMetadata(w http.ResponseWriter, _ *http.Request) {
 		"token_endpoint_auth_methods_supported":          []string{"none", "client_secret_basic", "client_secret_post", "private_key_jwt"},
 		"scopes_supported":                               s.Config.AllowedScopes,
 		"authorization_response_iss_parameter_supported": s.Config.AuthorizationResponseIssuer,
+		"client_id_metadata_document_supported":          s.Config.ClientIDMetadataEnabled,
 		// OpenID Connect Discovery 1.0 section 3 makes these REQUIRED, and the
 		// same document is served at /.well-known/openid-configuration. A client
 		// that validates against the OIDC schema - Cursor does - rejects the
@@ -419,7 +420,7 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.FormValue("grant_type") {
 	case "authorization_code":
-		s.authorizationCodeToken(w, r)
+		s.authorizationCodeToken(w, r, client)
 	case "refresh_token":
 		s.refreshTokenToken(w, r)
 	case "urn:ietf:params:oauth:grant-type:token-exchange":
@@ -429,9 +430,9 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) authorizationCodeToken(w http.ResponseWriter, r *http.Request) {
+func (s *Server) authorizationCodeToken(w http.ResponseWriter, r *http.Request, client Client) {
 	code, err := s.Store.ConsumeAuthorizationCode(r.FormValue("code"), s.now())
-	if err != nil || code.ClientID != r.FormValue("client_id") || code.RedirectURI != r.FormValue("redirect_uri") {
+	if err != nil || code.ClientID != r.FormValue("client_id") || code.RedirectURI != r.FormValue("redirect_uri") || !s.clientRedirectPermitted(client, code.RedirectURI) {
 		oauthError(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}

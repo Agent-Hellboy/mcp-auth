@@ -19,13 +19,16 @@
 [![Docker pulls](https://img.shields.io/docker/pulls/princekrroshan01/mcp-auth-server)](https://hub.docker.com/r/princekrroshan01/mcp-auth-server)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A provider-neutral OAuth platform for HTTP-based Model Context Protocol (MCP)
-resource servers: a standalone authorization server, plus Python, Go, and
-TypeScript SDKs for the resource-server side.
+A provider-neutral OAuth 2.1 authorization broker for the Model Context Protocol
+(MCP) ecosystem. mcp-auth sits between MCP clients and resource servers on one
+side and an organization's upstream identity provider on the other. It provides
+a standalone authorization server, plus Python, Go, and TypeScript SDKs for the
+resource-server side.
 
 It separates three concerns that are often coupled:
 
-- **MCP clients** complete standard Authorization Code + PKCE.
+- **MCP clients** complete the OAuth 2.1 Authorization Code flow with mandatory
+  PKCE S256.
 - **MCP resource servers** validate narrowly scoped access tokens with reusable
   Python, Go, or TypeScript SDKs.
 - **Identity providers and downstream APIs** stay behind runtime-configured
@@ -36,6 +39,23 @@ and a plain OAuth 2.0 provider (no `openid`, identity from `userinfo_endpoint`)
 are supported. Endpoints may be configured directly or discovered from the
 issuer, and ID tokens may use RS256, PS256, or ES256. See
 [OIDC or plain OAuth 2.0](docs/auth-server.md#oidc-or-plain-oauth-20).
+
+## Standards position
+
+mcp-auth supports the MCP OAuth 2.1 authorization profile, including RFC 8414
+Authorization Server Metadata, RFC 9728 Protected Resource Metadata, mandatory
+PKCE S256, resource indicators and audience-bound tokens, refresh-token
+rotation, RFC 9207 authorization-response `iss`, and optionally Client ID
+Metadata Documents (CIMD), which are disabled by default and can be enabled by
+configuration. Dynamic Client Registration remains available for compatibility.
+The authorization server brokers
+authorization; it is not an identity provider. MFA, directory policy, user
+lifecycle, and upstream credentials belong to the upstream IdP.
+
+mcp-auth does not claim to implement every OAuth extension or every
+responsibility in the MCP specification. MCP clients, resource servers, and
+authorization servers have distinct normative responsibilities; the bundled
+authorization server and resource-server SDKs cover their respective roles.
 
 ## How it fits together
 
@@ -49,7 +69,7 @@ flowchart LR
 
     client -->|"1. MCP request"| resource
     resource -.->|"2. 401 + protected-resource metadata"| client
-    client -->|"3. Authorization Code + PKCE"| auth
+    client -->|"3. OAuth 2.1 Authorization Code + PKCE S256"| auth
     auth <-->|"4. User login and consent"| idp
     auth -->|"5. MCP access token"| client
     client -->|"6. Bearer token"| resource
