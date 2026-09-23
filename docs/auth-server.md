@@ -328,6 +328,14 @@ redirect — is preserved by mandatory PKCE `S256` plus exact redirect matching.
 Deployments that want the stricter rule set `allowed_client_redirect_uris` to
 an explicit HTTPS/loopback allowlist.
 
+### Remote Claude Code sign-in over SSH
+
+When Claude Code runs on a remote VM or SSH session and you open its sign-in URL in a browser on your laptop, the browser may fail to reach the `http://localhost:<port>/callback` redirect. This is the client callback: `localhost` is resolved on the browser machine, while the callback listener belongs to the remote Claude Code process.
+
+Claude Code documents this recovery flow: copy the **full callback URL** from the browser address bar and paste it into the callback URL prompt in the waiting Claude Code terminal/session. Claude Code then completes the callback locally on the remote machine. Do not paste the URL into a chat or share it; it carries a short-lived authorization code. See [Claude Code remote MCP authentication](https://code.claude.com/docs/en/mcp#authenticate-from-the-command-line).
+
+This workaround requires no auth-server callback setting or redirect URI change. It is client-side callback handling; the auth server still redirects to the URI supplied by the MCP client.
+
 `GET /authorize` requires `response_type=code`, `code_challenge_method=S256`, `code_challenge`, a resource from the configured allow-list, and a registered redirect URI. With one configured resource, `resource` may be omitted and defaults to it. It renders a consent page. In production, accepting consent redirects to the selected connector's upstream authorization endpoint and `/identity/callback` completes the upstream code flow. Local development also supports `approve=true` to exercise the flow without a browser.
 
 ### Consent page
