@@ -45,9 +45,9 @@ issuer, and ID tokens may use RS256, PS256, or ES256. See
 mcp-auth supports the MCP OAuth 2.1 authorization profile, including RFC 8414
 Authorization Server Metadata, RFC 9728 Protected Resource Metadata, mandatory
 PKCE S256, resource indicators and audience-bound tokens, refresh-token
-rotation, RFC 9207 authorization-response `iss`, and optionally Client ID
-Metadata Documents (CIMD), which are disabled by default and can be enabled by
-configuration. MCP clients should prefer pre-registered credentials when
+rotation, RFC 9207 authorization-response `iss`, and Client ID Metadata
+Documents (CIMD), enabled by default. Set
+`MCP_AUTH_CLIENT_ID_METADATA_ENABLED=false` to opt out. MCP clients should prefer pre-registered credentials when
 available, then CIMD when the authorization server advertises support, and use
 Dynamic Client Registration (DCR) as a backwards-compatibility fallback. DCR
 is not a second registration step after CIMD. The authorization server brokers

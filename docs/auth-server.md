@@ -10,9 +10,9 @@ The server supports the MCP OAuth 2.1 authorization profile: RFC 8414
 Authorization Server Metadata, RFC 9728 Protected Resource Metadata, mandatory
 PKCE S256, resource indicators and audience-bound tokens, refresh-token
 rotation, RFC 9207 authorization-response `iss`, and Client ID Metadata
-Documents (CIMD) when enabled. CIMD is disabled by default and can be enabled
-with `MCP_AUTH_CLIENT_ID_METADATA_ENABLED`; metadata reports support according
-to that setting. Dynamic Client Registration remains available as a fallback
+Documents (CIMD), enabled by default. Set
+`MCP_AUTH_CLIENT_ID_METADATA_ENABLED=false` to opt out; metadata reports
+support according to that setting. Dynamic Client Registration remains available as a fallback
 and is disabled by default; set `MCP_AUTH_REGISTRATION_ENABLED` to enable it.
 Clients should use pre-registered credentials when available, otherwise prefer
 CIMD when advertised and fall back to DCR only when CIMD is unavailable. CIMD
@@ -129,8 +129,9 @@ Important settings:
   accepts; the callback is then served at that path too, so your ingress has to route it here. See
   [The redirect URI you register with your identity provider](#the-redirect-uri-you-register-with-your-identity-provider).
 - `MCP_AUTH_CLIENT_ID_METADATA_ENABLED`: accept an https URL as a `client_id` and fetch the OAuth
-  Client ID Metadata Document it names. Defaults to `false`, because the fetch target is chosen by
-  an unauthenticated caller. While it is off, a URL `client_id` is reported as an unknown client.
+  Client ID Metadata Document it names. Defaults to `true` for MCP client compatibility. Set it to
+  `false` to disable CIMD; metadata then reports CIMD as unsupported and URL `client_id` values are
+  rejected as unknown clients. Fetches are bounded and restricted to public HTTPS destinations.
 - `MCP_AUTH_CLIENT_ID_METADATA_HOSTS`: comma-separated hosts a metadata document may be fetched
   from. Empty allows any public host. Non-public destinations are refused at dial time regardless,
   after resolution, so a hostname pointing at a private range cannot be reached.

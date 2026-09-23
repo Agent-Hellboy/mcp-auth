@@ -176,11 +176,11 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (Clie
 	// The URL is the client_id, so this flow is the feature rather than a
 	// defect: a Client ID Metadata Document is fetched from the address the
 	// client names. It is safe because of the three guards above and below -
-	// ClientIDMetadataEnabled gates it off by default, allowedMetadataHost
+	// ClientIDMetadataEnabled gates it off when explicitly disabled, allowedMetadataHost
 	// applies the operator's host list, and metadataHTTPClient dials through
 	// publicOnlyDialContext, which resolves first and refuses anything that
 	// is not public unicast. Delete any of those and this suppression stops
-	// being true: see TestClientIDMetadataDisabledByDefault,
+	// being true: see TestClientIDMetadataEnabledByDefault,
 	// TestClientIDMetadataHostAllowlist, TestDialableIP and
 	// TestClientMetadataFetchRefusesPrivateHostname.
 	response, err := s.metadataHTTPClient().Do(request) // codeql[go/request-forgery]
