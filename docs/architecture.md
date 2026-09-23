@@ -16,6 +16,28 @@ helpers. They do not require the bundled authorization server.
 
 Provider integrations implement `IdentityProvider` or `TokenExchanger` interfaces. Provider-specific claims, SDKs, and policy remain outside the core server and SDKs.
 
+## Standards and roles
+
+mcp-auth supports the MCP OAuth 2.1 profile, including RFC 8414 Authorization
+Server Metadata, RFC 9728 Protected Resource Metadata, mandatory PKCE S256,
+resource indicators and audience-bound tokens, refresh-token rotation, RFC
+9207 authorization-response `iss`, and Client ID Metadata Documents (CIMD).
+CIMD is the preferred client-registration mechanism when advertised by the
+authorization server; Dynamic Client Registration (DCR) remains available as a
+backwards-compatibility fallback for servers that do not advertise CIMD. The
+client chooses one mechanism according to server metadata; it does not perform
+DCR after a successful CIMD registration because CIMD has no registration
+endpoint. This is a defined profile, not a claim to implement every OAuth
+extension or every
+responsibility in the MCP specification. Clients, resource servers, and
+authorization servers have distinct normative responsibilities.
+
+| Role | Responsibilities |
+| --- | --- |
+| Authorization server (`auth-server`) | Publishes authorization-server metadata; handles client registration, authorization, consent, codes and tokens; requires PKCE S256; binds tokens to the requested resource; rotates refresh tokens; brokers user authentication through the selected upstream provider. |
+| Resource-server SDK | Publishes or helps publish Protected Resource Metadata and challenges; validates issuer, signature, audience/resource, expiry, subject, and required scopes; provides token-exchange helpers. The resource server defines its own access policy. |
+| Upstream identity provider | Authenticates users and owns MFA, directory and access policy, user lifecycle, and upstream credentials. mcp-auth is not an identity provider. |
+
 ```mermaid
 flowchart TB
     subgraph clients["MCP clients"]
@@ -45,7 +67,7 @@ flowchart TB
     api["Downstream API"]
 
     desktop <-->|"MCP + OAuth"| sdk
-    desktop <-->|"Authorization Code + PKCE"| handlers
+    desktop <-->|"OAuth 2.1 Authorization Code + PKCE S256"| handlers
     provider <-->|"Login and identity"| idp
     exchanger <-->|"Downstream credential"| idp
     tools -->|"Provider token only"| api

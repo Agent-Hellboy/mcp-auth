@@ -4,6 +4,30 @@ The Go authorization server presents standard OAuth endpoints to MCP clients and
 adapts a selected upstream OIDC or OAuth 2.0 provider at runtime. One process is
 bound to one connector and one MCP resource audience.
 
+## Standards and compatibility
+
+The server supports the MCP OAuth 2.1 authorization profile: RFC 8414
+Authorization Server Metadata, RFC 9728 Protected Resource Metadata, mandatory
+PKCE S256, resource indicators and audience-bound tokens, refresh-token
+rotation, RFC 9207 authorization-response `iss`, and Client ID Metadata
+Documents (CIMD), enabled by default. Set
+`MCP_AUTH_CLIENT_ID_METADATA_ENABLED=false` to opt out; metadata reports
+support according to that setting. Dynamic Client Registration remains available as a fallback
+and is disabled by default; set `MCP_AUTH_REGISTRATION_ENABLED` to enable it.
+Clients should use pre-registered credentials when available, otherwise prefer
+CIMD when advertised and fall back to DCR only when CIMD is unavailable. CIMD
+does not invoke DCR after success: its HTTPS metadata URL is the client ID and
+the authorization server resolves it directly.
+Compatibility follows the MCP
+specification versions described in the
+[architecture guide](architecture.md#standards-and-roles).
+
+mcp-auth is an authorization broker, not an identity provider. MFA, directory
+policy, user lifecycle, and upstream credentials remain the responsibility of
+the configured upstream IdP. This implementation does not claim every OAuth
+extension or every MCP specification responsibility; clients, resource
+servers, and authorization servers each have distinct normative roles.
+
 ```mermaid
 flowchart LR
     client["MCP client"]
@@ -26,7 +50,7 @@ flowchart LR
     idp["Upstream OIDC / OAuth 2.0 provider"]
     resource["MCP resource server"]
 
-    client <-->|"Authorization Code + PKCE"| endpoints
+    client <-->|"OAuth 2.1 Authorization Code + PKCE S256"| endpoints
     identity <-->|"Login, ID token, or userinfo"| idp
     exchange <-->|"Access / refresh token"| idp
     endpoints -->|"MCP JWT"| client
@@ -105,8 +129,9 @@ Important settings:
   accepts; the callback is then served at that path too, so your ingress has to route it here. See
   [The redirect URI you register with your identity provider](#the-redirect-uri-you-register-with-your-identity-provider).
 - `MCP_AUTH_CLIENT_ID_METADATA_ENABLED`: accept an https URL as a `client_id` and fetch the OAuth
-  Client ID Metadata Document it names. Defaults to `false`, because the fetch target is chosen by
-  an unauthenticated caller. While it is off, a URL `client_id` is reported as an unknown client.
+  Client ID Metadata Document it names. Defaults to `true` for MCP client compatibility. Set it to
+  `false` to disable CIMD; metadata then reports CIMD as unsupported and URL `client_id` values are
+  rejected as unknown clients. Fetches are bounded and restricted to public HTTPS destinations.
 - `MCP_AUTH_CLIENT_ID_METADATA_HOSTS`: comma-separated hosts a metadata document may be fetched
   from. Empty allows any public host. Non-public destinations are refused at dial time regardless,
   after resolution, so a hostname pointing at a private range cannot be reached.
@@ -302,6 +327,14 @@ an authorization code cannot be redeemed by an attacker who intercepts the
 redirect — is preserved by mandatory PKCE `S256` plus exact redirect matching.
 Deployments that want the stricter rule set `allowed_client_redirect_uris` to
 an explicit HTTPS/loopback allowlist.
+
+### Remote Claude Code sign-in over SSH
+
+When Claude Code runs on a remote VM or SSH session and you open its sign-in URL in a browser on your laptop, the browser may fail to reach the `http://localhost:<port>/callback` redirect. This is the client callback: `localhost` is resolved on the browser machine, while the callback listener belongs to the remote Claude Code process.
+
+Claude Code documents this recovery flow: copy the **full callback URL** from the browser address bar and paste it into the callback URL prompt in the waiting Claude Code terminal/session. Claude Code then completes the callback locally on the remote machine. Do not paste the URL into a chat or share it; it carries a short-lived authorization code. See [Claude Code remote MCP authentication](https://code.claude.com/docs/en/mcp#authenticate-from-the-command-line).
+
+This workaround requires no auth-server callback setting or redirect URI change. It is client-side callback handling; the auth server still redirects to the URI supplied by the MCP client.
 
 `GET /authorize` requires `response_type=code`, `code_challenge_method=S256`, `code_challenge`, a resource from the configured allow-list, and a registered redirect URI. With one configured resource, `resource` may be omitted and defaults to it. It renders a consent page. In production, accepting consent redirects to the selected connector's upstream authorization endpoint and `/identity/callback` completes the upstream code flow. Local development also supports `approve=true` to exercise the flow without a browser.
 

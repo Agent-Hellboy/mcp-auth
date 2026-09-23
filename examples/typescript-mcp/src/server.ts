@@ -10,7 +10,10 @@ import {
 const issuer = process.env.MCP_AUTH_ISSUER ?? "http://localhost:8080";
 const port = Number(process.env.MCP_PORT ?? 8081);
 const resource = process.env.MCP_RESOURCE ?? `http://localhost:${port}/mcp`;
-const metadataUrl = new URL("/.well-known/oauth-protected-resource/mcp", resource).toString();
+const resourceURL = new URL(resource);
+const resourcePath = resourceURL.pathname || "/mcp";
+const metadataPath = `/.well-known/oauth-protected-resource${resourcePath === "/" ? "" : resourcePath}`;
+const metadataUrl = new URL(metadataPath, resourceURL.origin).toString();
 const verifier = new JWTVerifier({
   issuer,
   audience: resource,
@@ -24,10 +27,10 @@ function json(response: ServerResponse, status: number, body: unknown): void {
 }
 
 const server = createServer(async (request, response) => {
-  if (request.method === "GET" && ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"].includes(request.url ?? "")) {
+  if (request.method === "GET" && ["/.well-known/oauth-protected-resource", metadataPath].includes(request.url ?? "")) {
     return json(response, 200, protectedResourceMetadata(verifier, resource, issuer));
   }
-  if (request.method !== "POST" || request.url !== "/mcp") return json(response, 404, { error: "not_found" });
+  if (request.method !== "POST" || request.url !== resourcePath) return json(response, 404, { error: "not_found" });
 
   let claims;
   try {

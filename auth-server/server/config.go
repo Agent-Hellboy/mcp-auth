@@ -27,9 +27,9 @@ type Config struct {
 	// the upstream provider. Empty derives it from the issuer.
 	IdentityCallback string
 	// ClientIDMetadataEnabled turns on OAuth Client ID Metadata Documents.
-	// Off by default: a URL client_id makes this server issue an outbound GET
-	// to an address an unauthenticated caller chose, so an operator opts in
-	// the same way they opt in to dynamic registration.
+	// Enabled by default to support MCP clients that use CIMD. Set
+	// MCP_AUTH_CLIENT_ID_METADATA_ENABLED=false to opt out. Fetches are limited
+	// to public HTTPS destinations and bounded by timeout and response size.
 	ClientIDMetadataEnabled bool
 	// ClientIDMetadataHosts optionally restricts which hosts a client_id
 	// metadata document may be fetched from. Empty means any public host.
@@ -241,7 +241,7 @@ func ConfigFromEnv() Config {
 		PrivateKeyFile:              os.Getenv("MCP_AUTH_PRIVATE_KEY_FILE"),
 		RegistrationEnabled:         boolEnv("MCP_AUTH_REGISTRATION_ENABLED", false),
 		IdentityCallback:            strings.TrimSpace(os.Getenv("MCP_AUTH_IDENTITY_CALLBACK_URL")),
-		ClientIDMetadataEnabled:     boolEnv("MCP_AUTH_CLIENT_ID_METADATA_ENABLED", false),
+		ClientIDMetadataEnabled:     boolEnv("MCP_AUTH_CLIENT_ID_METADATA_ENABLED", true),
 		ClientIDMetadataHosts:       csvEnv("MCP_AUTH_CLIENT_ID_METADATA_HOSTS", nil),
 		LocalDevelopment:            boolEnv("MCP_AUTH_LOCAL_DEVELOPMENT", false),
 		LocalSubject:                env("MCP_AUTH_LOCAL_SUBJECT", "local-user"),

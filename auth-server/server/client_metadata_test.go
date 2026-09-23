@@ -159,26 +159,19 @@ func TestClientMetadataFetchRefusesPrivateHostname(t *testing.T) {
 	}
 }
 
-// TestClientIDMetadataDisabledByDefault covers the feature gate. A URL
-// client_id makes this server fetch an address an unauthenticated caller
-// chose, so it is opt-in like dynamic registration. Until an operator enables
-// it, a URL is reported as an unknown client and no request is made.
-func TestClientIDMetadataDisabledByDefault(t *testing.T) {
-	instance := testServer(t)
-	fetched := false
-	instance.ClientMetadataClient = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		fetched = true
-		return nil, errors.New("must not be called")
-	})}
-	if instance.Config.ClientIDMetadataEnabled {
-		t.Fatal("ClientIDMetadataEnabled should default to false")
+// TestClientIDMetadataEnabledByDefault covers the default feature gate. CIMD
+// is advertised for MCP clients; operators can explicitly disable it.
+func TestClientIDMetadataEnabledByDefault(t *testing.T) {
+	t.Setenv("MCP_AUTH_CLIENT_ID_METADATA_ENABLED", "")
+	if !ConfigFromEnv().ClientIDMetadataEnabled {
+		t.Fatal("ClientIDMetadataEnabled should default to true from environment config")
 	}
-	_, err := instance.resolveClient(context.Background(), "https://client.example.com/client.json")
-	if !errors.Is(err, errUnknownClient) {
-		t.Fatalf("resolveClient err = %v, want errUnknownClient", err)
-	}
-	if fetched {
-		t.Fatal("resolveClient fetched a metadata document while the feature was disabled")
+}
+
+func TestClientIDMetadataCanBeDisabled(t *testing.T) {
+	t.Setenv("MCP_AUTH_CLIENT_ID_METADATA_ENABLED", "false")
+	if ConfigFromEnv().ClientIDMetadataEnabled {
+		t.Fatal("ClientIDMetadataEnabled should honor explicit false")
 	}
 }
 

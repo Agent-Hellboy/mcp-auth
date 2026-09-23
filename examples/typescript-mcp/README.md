@@ -11,5 +11,8 @@ npm start
 ```
 
 The defaults expect the local-development authorization server on port 8080
-and serve the MCP endpoint at `http://localhost:8081/mcp`. Override
-`MCP_AUTH_ISSUER`, `MCP_AUTH_JWKS_URI`, `MCP_RESOURCE`, or `MCP_PORT` as needed.
+and serve the MCP endpoint at `http://localhost:8081/mcp`. The server uses the
+path in `MCP_RESOURCE` for both MCP requests and the matching protected-resource
+metadata URL, including nested paths such as
+`https://mcp.example.com/my-server/mcp`. Override `MCP_AUTH_ISSUER`,
+`MCP_AUTH_JWKS_URI`, `MCP_RESOURCE`, or `MCP_PORT` as needed.
