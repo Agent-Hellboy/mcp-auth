@@ -47,8 +47,10 @@ Authorization Server Metadata, RFC 9728 Protected Resource Metadata, mandatory
 PKCE S256, resource indicators and audience-bound tokens, refresh-token
 rotation, RFC 9207 authorization-response `iss`, and optionally Client ID
 Metadata Documents (CIMD), which are disabled by default and can be enabled by
-configuration. Dynamic Client Registration remains available for compatibility.
-The authorization server brokers
+configuration. MCP clients should prefer pre-registered credentials when
+available, then CIMD when the authorization server advertises support, and use
+Dynamic Client Registration (DCR) as a backwards-compatibility fallback. DCR
+is not a second registration step after CIMD. The authorization server brokers
 authorization; it is not an identity provider. MFA, directory policy, user
 lifecycle, and upstream credentials belong to the upstream IdP.
 

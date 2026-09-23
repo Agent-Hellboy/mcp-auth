@@ -14,6 +14,10 @@ Documents (CIMD) when enabled. CIMD is disabled by default and can be enabled
 with `MCP_AUTH_CLIENT_ID_METADATA_ENABLED`; metadata reports support according
 to that setting. Dynamic Client Registration remains available as a fallback
 and is disabled by default; set `MCP_AUTH_REGISTRATION_ENABLED` to enable it.
+Clients should use pre-registered credentials when available, otherwise prefer
+CIMD when advertised and fall back to DCR only when CIMD is unavailable. CIMD
+does not invoke DCR after success: its HTTPS metadata URL is the client ID and
+the authorization server resolves it directly.
 Compatibility follows the MCP
 specification versions described in the
 [architecture guide](architecture.md#standards-and-roles).

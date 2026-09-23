@@ -22,8 +22,13 @@ mcp-auth supports the MCP OAuth 2.1 profile, including RFC 8414 Authorization
 Server Metadata, RFC 9728 Protected Resource Metadata, mandatory PKCE S256,
 resource indicators and audience-bound tokens, refresh-token rotation, RFC
 9207 authorization-response `iss`, and Client ID Metadata Documents (CIMD).
-CIMD and Dynamic Client Registration are both supported. This is a defined
-profile, not a claim to implement every OAuth extension or every
+CIMD is the preferred client-registration mechanism when advertised by the
+authorization server; Dynamic Client Registration (DCR) remains available as a
+backwards-compatibility fallback for servers that do not advertise CIMD. The
+client chooses one mechanism according to server metadata; it does not perform
+DCR after a successful CIMD registration because CIMD has no registration
+endpoint. This is a defined profile, not a claim to implement every OAuth
+extension or every
 responsibility in the MCP specification. Clients, resource servers, and
 authorization servers have distinct normative responsibilities.
 
